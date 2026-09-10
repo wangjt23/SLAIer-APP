@@ -3,6 +3,7 @@ package com.slai.campus.di
 import android.content.Context
 import androidx.room.Room
 import com.slai.campus.core.common.AppDispatchers
+import com.slai.campus.core.common.ApplicationScope
 import com.slai.campus.core.common.IoDispatcher
 import com.slai.campus.core.database.AppDatabase
 import com.slai.campus.core.database.ScheduleDao
@@ -28,6 +29,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
@@ -47,6 +50,16 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDispatchers(): AppDispatchers = AppDispatchers()
+
+    /**
+     * 进程级作用域：故意永不取消 —— 单例的生命周期就是进程本身。
+     * 用 SupervisorJob，让某个派生流挂掉不至于带走其它派生流。
+     */
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(dispatchers: AppDispatchers): CoroutineScope =
+        CoroutineScope(SupervisorJob() + dispatchers.default)
 
     /**
      * The one clock the app reads. Injecting it (instead of calling LocalDate.now() inline) keeps

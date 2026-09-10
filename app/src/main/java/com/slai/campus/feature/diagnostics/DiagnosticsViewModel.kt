@@ -85,7 +85,6 @@ class DiagnosticsViewModel @Inject constructor(
 
     fun probeSessions() = runProbe {
         log("=== session probe ===")
-        sessionManager.hydrate()
         val snapshot = sessionManager.probeAll()
         log("SIS: ${snapshot.sis}")
         log("STU: ${snapshot.stu}")

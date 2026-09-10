@@ -29,7 +29,6 @@ class ReminderRescheduleWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         return runCatching {
-            sessionManager.hydrate()
             val count = reminderScheduler.rescheduleFromCache()
             AppLog.i("reminder reschedule worker scheduled $count alarm(s)")
             Result.success(workDataOf(KEY_COUNT to count))

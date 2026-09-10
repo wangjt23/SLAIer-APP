@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -45,7 +46,11 @@ import com.slai.campus.feature.settings.SettingsScreen
 @Composable
 fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
     var selectedTab by rememberSaveable { mutableStateOf(Tab.HOME) }
-    var overlay by remember { mutableStateOf<Overlay?>(null) }
+    /*
+     * overlay 也必须 rememberSaveable：只用一个 remember 的话，进程被系统回收后重建会出现
+     * "tab 还在、浮层没了"的半状态。恢复策略（哪些该恢复、哪些刻意不恢复）在 OverlayPersistence。
+     */
+    var overlay by rememberSaveable(stateSaver = OverlaySaver) { mutableStateOf<Overlay?>(null) }
 
     val session by viewModel.session.collectAsStateWithLifecycle()
     val webCompleting by viewModel.webCompleting.collectAsStateWithLifecycle()
@@ -204,3 +209,9 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
 
 /** 登录成功后让 WebView 多停一会儿再退场，给用户看清"确实登录上了"。 */
 private const val LOGIN_AUTO_CLOSE_DELAY_MS = 600L
+
+/** 把 [OverlayPersistence] 的纯编解码接到 Compose 的保存/恢复机制上。 */
+private val OverlaySaver = Saver<Overlay?, List<String>>(
+    save = { overlay -> OverlayPersistence.encode(overlay) },
+    restore = { saved -> OverlayPersistence.decode(saved) }
+)

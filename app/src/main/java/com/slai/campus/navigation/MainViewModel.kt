@@ -74,7 +74,6 @@ class MainViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            sessionManager.hydrate()
             // Probe silently on start: it tells the home screen whether to show the
             // "需要重新登录" banner without ever opening a login UI by itself.
             runCatching { sessionManager.probeAll() }

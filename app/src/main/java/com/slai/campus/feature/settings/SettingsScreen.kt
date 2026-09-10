@@ -127,8 +127,14 @@ fun SettingsScreen(
 
             SettingRow(
                 title = stringResource(R.string.settings_first_week_monday),
+                // 空格交给资源文件：中文"已确认：2026-09-07"、英文"Confirmed: 2026-09-07"。
                 summary = state.firstWeekMonday?.let {
-                    (if (state.anchorConfirmed) stringResource(R.string.settings_anchor_confirmed) else stringResource(R.string.settings_anchor_estimated)) + it.format(DateTimeFormatter.ISO_DATE)
+                    val date = it.format(DateTimeFormatter.ISO_DATE)
+                    stringResource(
+                        if (state.anchorConfirmed) R.string.settings_anchor_confirmed
+                        else R.string.settings_anchor_estimated,
+                        date
+                    )
                 } ?: stringResource(R.string.settings_anchor_unset)
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

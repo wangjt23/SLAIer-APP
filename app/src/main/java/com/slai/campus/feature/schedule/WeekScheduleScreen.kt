@@ -195,7 +195,8 @@ fun WeekScheduleScreen(
 
 @Composable
 private fun DayCard(day: DaySection) {
-    val formatter = DateTimeFormatter.ofPattern("M月d日 EEE", Locale.CHINA)
+    // 日期格式跟随语言：这里原本写死 "M月d日 EEE" + Locale.CHINA，英文界面下日期仍是中文。
+    val formatter = DateTimeFormatter.ofPattern(shortDatePatternFor(currentLocale()), currentLocale())
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(

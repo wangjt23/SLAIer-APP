@@ -116,6 +116,14 @@ class SessionStore @Inject constructor(
 
     suspend fun studentIdHint(): String? = context.sessionDataStore.data.first()[Keys.STUDENT_ID_HINT]
 
+    /**
+     * 学号提示的 Flow 形态。
+     *
+     * 一次性读（[studentIdHint]）只适合"写之前看一眼"的场景；凡是**显示**它的地方都必须用 Flow，
+     * 否则写完不会回推，界面停在旧值（设置页"双真相源"那处就是这么来的）。
+     */
+    val studentIdHintFlow: Flow<String?> = context.sessionDataStore.data.map { it[Keys.STUDENT_ID_HINT] }
+
     suspend fun setSemesterAnchor(monday: LocalDate?, confirmed: Boolean) {
         context.sessionDataStore.edit { prefs ->
             if (monday == null) {
@@ -128,11 +136,18 @@ class SessionStore @Inject constructor(
         }
     }
 
-    suspend fun semesterAnchor(): Pair<LocalDate?, Boolean> {
-        val prefs = context.sessionDataStore.data.first()
-        val day = prefs[Keys.FIRST_WEEK_MONDAY]
-        return (day?.let { LocalDate.ofEpochDay(it) }) to (prefs[Keys.FIRST_WEEK_ANCHOR_CONFIRMED] ?: false)
+    /**
+     * 学期锚点（第一教学周周一，以及它是否由用户确认过）的 Flow 形态。
+     *
+     * 这个值有**三个**写入方：设置页、后台刷新时的学期自动发现、以及 WebView 提取兜底。
+     * 任何把它缓存进 ViewModel 再不管的做法，都会让课表页停在旧值上（Issue 1 就是这么来的）。
+     */
+    val semesterAnchorFlow: Flow<Pair<LocalDate?, Boolean>> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.FIRST_WEEK_MONDAY]?.let(LocalDate::ofEpochDay) to
+            (prefs[Keys.FIRST_WEEK_ANCHOR_CONFIRMED] ?: false)
     }
+
+    suspend fun semesterAnchor(): Pair<LocalDate?, Boolean> = semesterAnchorFlow.first()
 
     /** 界面语言，热流形式，切换后界面立刻跟着变。 */
     val appLanguage: Flow<com.slai.campus.core.common.AppLanguage> =

@@ -196,8 +196,8 @@
     <string name="hero_logo_cd">深圳河套学院 Shenzhen Loop Area Institute</string>
     <string name="home_no_swipe_hint">今天还没有刷卡记录，点「刷新」从学生系统读取</string>
     <string name="home_no_duration">暂无累计时长</string>
-    <string name="settings_anchor_confirmed">已确认：</string>
-    <string name="settings_anchor_estimated">推算：</string>
+    <string name="settings_anchor_confirmed">已确认：%1$s</string>
+    <string name="settings_anchor_estimated">推算：%1$s</string>
     <string name="settings_anchor_unset">未设置（无法把周次换算成日期）</string>
     <string name="settings_pick_date">选择日期</string>
     <string name="settings_by_current_week">按当前周次</string>

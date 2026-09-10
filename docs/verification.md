@@ -1276,5 +1276,83 @@ STU 目前是纯网页模式，这轮不动它。
 > 第 115/116 项需要在手机上用真实账号走一遍：从首页点「登录教务系统」，登录完成后应自动回到
 > 首页并弹出"登录完成，正在同步课表…"；从首页点「打开教务系统」，登录完成后应停在教务系统页面上。
 
+---
+
+## 21. 第十七轮：`docs/SLAIer-APP-issues.pdf` 里三条 issue 的核实与落地（2026-09-10）
+
+先把三条都对着代码核了一遍，再逐条实测是否真的能复现 —— 结论是**三条都真实存在**，
+但其中两条的**结论/改法需要修正**。
+
+### 21.1 核实结论
+
+| # | 标题 | 真实性 | 修正 |
+|---|---|---|---|
+| 1 | 设置锚点后课表页周次不刷新 | ✅ 真 bug，已复现 | 无 |
+| 2.2 | `SettingsViewModel.extras` + 手动回读 | ✅ 真实 | 无 |
+| 2.3 | `extras.value = extras.value` 自赋值 | ✅ 真实（no-op） | 无 |
+| 2.4 | `awaitAuthenticated` 轮询 | ✅ 真实，但**是死代码** | 不该"改写成 `withTimeoutOrNull`"，应当**删除**（全仓仅剩定义本身） |
+| 2.1 | `SessionManager._state` 与 store 双真相源 | ✅ 真实 | "由 ScheduleViewModel 负责唤醒单例"不准确：`hydrate()` 有 **4 个**调用点（MainViewModel / ScheduleViewModel / DiagnosticsViewModel / ReminderRescheduleWorker） |
+| 3 | overlay 未 `rememberSaveable` | ✅ 真实，已复现 | 不该无脑恢复：登录流程与抓包浮层**刻意不恢复** |
+
+### 21.2 Issue 1 的实测复现（修复前）
+
+```text
+先打开课表 tab                → “Teaching week 1 is not set”
+设置 → 本周是第 N 周 → 1       → 设置页立刻显示 Confirmed: 2026-09-07
+切回课表 tab                  → 仍然 “Teaching week 1 is not set”   ← bug
+切首页再切回来                 → 仍然（Composition 重建，但 ViewModel 没死）
+am force-stop 后重启           → 恢复正常
+```
+
+原因确认：`ScheduleViewModel.anchor` 是本地 `MutableStateFlow`，只在 `init` 里读一次；而锚点有
+**三个**写入方（设置页、后台刷新的学期自动发现、WebView 提取兜底），ViewModel 又落在 Activity
+作用域（非 NavHost + manifest 声明 `configChanges`），切 tab / 旋转都不会重建。
+
+### 21.3 本轮改动
+
+| # | 改动 | 说明 |
+|---|---|---|
+| 1 | `SessionStore` 新增 `semesterAnchorFlow` / `studentIdHintFlow`；`ScheduleViewModel` 直接 observe | Issue 1：锚点从"读一次"变成"跟着 Flow 走" |
+| 2 | `SettingsViewModel` 删掉 `extras` + `refreshExtras()`，改 observe 同一组 Flow | Issue 2.2 / 2.3：UDF 的环闭合，自赋值 no-op 一并消失 |
+| 3 | `SessionManager` 改为**从 `store.snapshot` 派生**（`stateIn(appScope, Eagerly)`）+ 一层 `pending` overlay | Issue 2.1：唯一真相源是 DataStore；overlay 只承载"还没落盘的写入"，磁盘追上来自动出栈，所以既没有双真相源，也不会出现状态回跳 |
+| 4 | 删除 `hydrate()`（4 个调用点）与死代码 `awaitAuthenticated()` | Issue 2.1 / 2.4 |
+| 5 | 新增 `@ApplicationScope` + `AppModule` 里的进程级 `CoroutineScope` | 派生流必须一直热着，否则 `stateOf()` 这类同步读会拿到陈旧初值 |
+| 6 | `Overlay` 改用 `rememberSaveable` + `Saver`，编解码抽成纯函数 `OverlayPersistence` | Issue 3：恢复诊断/Provider/浏览类浮层；**登录流程与抓包浮层刻意不恢复** |
+| 7 | `requireAccountHash()` 补一次"直接问真相源" | 见 21.4 第 3 条 |
+| 8 | 锚点文案改成格式串 `已确认：%1$s` / `Confirmed: %1$s` | 英文界面原本显示 `Confirmed:2026-09-07`（缺空格） |
+| 9 | `WeekScheduleScreen.DayCard` 改用 `shortDatePatternFor(currentLocale())` | 英文界面下课表日期原本仍是 `9月7日 周一` |
+
+**刻意保留**：`SessionState.ERROR` 仍然只存在于内存（"这次没探出来"是瞬时观察，不是持久事实）——
+`set()` 里那条守卫原样保留，只是从"内存状态"变成了"overlay 里的一条"。
+
+### 21.4 顺带发现的三个问题
+
+1. **英文界面课表日期是中文**（已修，见上表 9）。
+2. **锚点文案缺空格**（已修，见上表 8）。
+3. **`requireAccountHash()` 可能换掉缓存分区**（已修）：`AccountHasher.deviceLocalHash(null)`
+   每次都生成**随机** key，而原实现只读内存快照 —— 冷启动头几毫秒内若被调用，会写出第二个 hash，
+   用户已经缓存的课表看起来就"凭空消失"。现在会先回读一次 DataStore 的真实值。
+
+### 21.5 验证
+
+| # | 验证项 | 结果 |
+|---|---|---|
+| 119 | 修复前复现 Issue 1（切 tab 无效 / 杀进程才恢复） | ✅ 模拟器 |
+| 120 | 修复后：设置锚点 → 课表页标题**立刻**变成 `Week 11`，无需重启 | ✅ 模拟器截图 |
+| 121 | `signOut` 写入的 `NEEDS_LOGIN` 落盘并在重启后保持 | ✅ 模拟器 |
+| 122 | 探活失败（`STU: ERROR`）**不会**冲掉已确认的 `NEEDS_LOGIN` | ✅ 模拟器（重启后仍是"需要登录"） |
+| 123 | 会话探活链路在重构后仍工作（`SIS: EXPIRED` / `STU: ERROR`） | ✅ 模拟器诊断页 |
+| 124 | 进程被杀后**诊断浮层**被恢复 | ✅ 模拟器（`am kill`） |
+| 125 | 进程被杀后**登录浮层不被恢复**（刻意），回到主界面 | ✅ 模拟器 |
+| 126 | 浮层编解码：浏览类往返、工具类往返、登录/抓包不恢复、脏数据不崩 | ✅ 单测 7 项 |
+| 127 | 英文界面下课表日期为 `Mon, Sep 7` | ✅ 模拟器 |
+| 128 | 设置页锚点文案 `Confirmed: 2026-06-29`（有空格） | ✅ 模拟器 |
+| 129 | 单元测试总数 | ✅ **172 通过 / 0 失败**（新增 7 项） |
+
+> 无法在模拟器上验证的部分：Issue 2.1 改完之后**真实登录 + 静默续期 + 901** 的完整链路
+> （需要真机账号）。代码路径已逐一核对（`probe` / `set` / `signOut` / `shouldSync` 都走同一条
+> 派生流），但正式发版前建议在手机上确认一次登录后课表刷新正常。
+
+
 
 

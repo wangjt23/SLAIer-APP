@@ -203,8 +203,8 @@
     <string name="hero_logo_cd">Shenzhen Loop Area Institute</string>
     <string name="home_no_swipe_hint">No swipes recorded today yet — tap Refresh to read them from the student system</string>
     <string name="home_no_duration">No time accumulated yet</string>
-    <string name="settings_anchor_confirmed">Confirmed:</string>
-    <string name="settings_anchor_estimated">Estimated:</string>
+    <string name="settings_anchor_confirmed">Confirmed: %1$s</string>
+    <string name="settings_anchor_estimated">Estimated: %1$s</string>
     <string name="settings_anchor_unset">Not set (week numbers cannot be turned into dates)</string>
     <string name="settings_pick_date">Pick a date</string>
     <string name="settings_by_current_week">From current week</string>

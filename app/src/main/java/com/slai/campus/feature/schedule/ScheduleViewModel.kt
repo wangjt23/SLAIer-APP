@@ -12,6 +12,7 @@ import com.slai.campus.domain.schedule.ScheduleRepository
 import com.slai.campus.domain.schedule.Semester
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -20,7 +21,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
 import javax.inject.Inject
@@ -112,14 +112,15 @@ class ScheduleViewModel @Inject constructor(
     private val weekOffset = MutableStateFlow(0)
     val offset: StateFlow<Int> = weekOffset.asStateFlow()
 
-    private val anchor = MutableStateFlow<Pair<LocalDate?, Boolean>>(null to false)
-
-    init {
-        viewModelScope.launch {
-            anchor.value = sessionStore.semesterAnchor()
-            sessionManager.hydrate()
-        }
-    }
+    /**
+     * 学期锚点直接取自 DataStore 的 Flow。
+     *
+     * 这里**不能**缓存成 `MutableStateFlow`：锚点有三个写入方 —— 设置页「第一教学周周一」、
+     * 后台刷新时的学期自动发现、以及 WebView 提取兜底。缓存一次就只在 init 里读的做法，会让
+     * 课表页一直停在旧值（"尚未设置开学周"的提示永远不消失），而且 ViewModel 落在 Activity
+     * 作用域、manifest 又声明了 configChanges，切 tab / 旋转都不会重建 —— 只有杀进程才恢复。
+     */
+    private val anchor: Flow<Pair<LocalDate?, Boolean>> = sessionStore.semesterAnchorFlow
 
     private val mondayOfSelectedWeek: StateFlow<LocalDate> = weekOffset
         .let { offsets ->

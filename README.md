@@ -240,7 +240,7 @@ sdk.dir=/path/to/Android/sdk
 # Release 版（未配置签名时自动回退到 debug 签名，仍可安装）
 ./gradlew :app:assembleRelease
 
-# 单元测试（165 个用例，全部不依赖 Android 框架）
+# 单元测试（172 个用例，全部不依赖 Android 框架）
 ./gradlew :app:testDebugUnitTest
 ```
 

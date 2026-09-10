@@ -23,7 +23,6 @@ import com.slai.campus.reminder.ReminderScheduler
 import com.slai.campus.worker.ScheduleSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,28 +59,40 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
-    private val extras = MutableStateFlow(Extras())
+    private data class Core(
+        val session: com.slai.campus.core.session.SessionSnapshot,
+        val urls: AppUrls?,
+        val reminders: ReminderConfig,
+        val schedulePrefs: SchedulePrefs
+    )
 
-    private data class Extras(
+    /**
+     * 课表相关的偏好（学期锚点、学号提示）。
+     *
+     * 这里以前是一个 `MutableStateFlow<Extras>` + `refreshExtras()`「写完手动回读」的组合 ——
+     * UDF 的环没有闭合：任何**不经过本 ViewModel** 的写入（后台刷新的学期自动发现）都不会回推，
+     * 界面就停在旧值上。改成直接 observe Store 的 Flow 之后，extras 和 refreshExtras() 一起消失。
+     */
+    private data class SchedulePrefs(
         val firstWeekMonday: LocalDate? = null,
         val anchorConfirmed: Boolean = false,
         val studentIdHint: String? = null
     )
 
-    private data class Core(
-        val session: com.slai.campus.core.session.SessionSnapshot,
-        val urls: AppUrls?,
-        val reminders: ReminderConfig,
-        val extra: Extras
-    )
+    private val schedulePrefs = combine(
+        sessionStore.semesterAnchorFlow,
+        sessionStore.studentIdHintFlow
+    ) { (monday, confirmed), hint ->
+        SchedulePrefs(firstWeekMonday = monday, anchorConfirmed = confirmed, studentIdHint = hint)
+    }
 
     // combine() 只有到 5 个 flow 的重载，第 5 个（语言）所以再套一层。
     private val core = combine(
         sessionManager.state,
         urlProvider.urls,
         sessionStore.reminderConfig,
-        extras
-    ) { session, urls, reminders, extra -> Core(session, urls, reminders, extra) }
+        schedulePrefs
+    ) { session, urls, reminders, prefs -> Core(session, urls, reminders, prefs) }
 
     private data class UiPrefs(
         val language: com.slai.campus.core.common.AppLanguage,
@@ -106,9 +117,9 @@ class SettingsViewModel @Inject constructor(
             session = c.session,
             urls = c.urls,
             reminders = c.reminders,
-            firstWeekMonday = c.extra.firstWeekMonday,
-            anchorConfirmed = c.extra.anchorConfirmed,
-            studentIdHint = c.extra.studentIdHint,
+            firstWeekMonday = c.schedulePrefs.firstWeekMonday,
+            anchorConfirmed = c.schedulePrefs.anchorConfirmed,
+            studentIdHint = c.schedulePrefs.studentIdHint,
             exactAlarmAllowed = reminderScheduler.canScheduleExactAlarms(),
             notificationsAllowed = NotificationHelper.canPostNotifications(appContext),
             language = prefs.language,
@@ -130,21 +141,6 @@ class SettingsViewModel @Inject constructor(
     /** 首页要不要显示课表。关掉后首页只剩考勤（高年级没课时用）。 */
     fun setShowTimetableOnHome(show: Boolean) {
         viewModelScope.launch { sessionStore.setShowTimetableOnHome(show) }
-    }
-
-    init {
-        refreshExtras()
-    }
-
-    fun refreshExtras() {
-        viewModelScope.launch {
-            val (anchor, confirmed) = sessionStore.semesterAnchor()
-            extras.value = Extras(
-                firstWeekMonday = anchor,
-                anchorConfirmed = confirmed,
-                studentIdHint = sessionStore.studentIdHint()
-            )
-        }
     }
 
     // ---- session ---------------------------------------------------------------------------
@@ -169,7 +165,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val normalized = monday?.with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
             sessionStore.setSemesterAnchor(normalized, confirmed = normalized != null)
-            refreshExtras()
+            // 不需要手动刷新界面状态：schedulePrefs 直接在 observe Store 的 Flow。
             reminderScheduler.rescheduleFromCache()
         }
     }
@@ -191,7 +187,6 @@ class SettingsViewModel @Inject constructor(
             if (trimmed != null) {
                 sessionManager.setAccountHash(com.slai.campus.core.session.AccountHasher.hash(trimmed))
             }
-            refreshExtras()
         }
     }
 
@@ -237,7 +232,6 @@ class SettingsViewModel @Inject constructor(
     fun setSisBaseUrl(value: String) {
         viewModelScope.launch {
             sessionStore.setBaseUrl(SchoolSystem.SIS, value.trim())
-            extras.value = extras.value
         }
     }
 
