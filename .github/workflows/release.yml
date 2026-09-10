@@ -1,19 +1,21 @@
 name: Release
 
-# Push a tag like v1.0.0 and this builds, signs and publishes the APK.
+# 推一个 v* 的 tag，这个工作流会自动跑测试、构建、用你的密钥签名、算出 SHA256，
+# 然后生成一个**草稿** Release（不自动公开，给你检查的机会）。
 #
-# Signing needs four repository secrets (Settings -> Secrets and variables -> Actions):
-#   KEYSTORE_BASE64   base64 of your .jks file
+# 需要四个仓库 Secret（Settings -> Secrets and variables -> Actions）：
+#   KEYSTORE_BASE64     keystore 的 base64，见下面注释
 #   KEYSTORE_PASSWORD
 #   KEY_ALIAS
 #   KEY_PASSWORD
 #
-# Create KEYSTORE_BASE64 with:
-#   macOS:  base64 -i keystore/release.jks | pbcopy
+# 生成 KEYSTORE_BASE64：
+#   macOS:  base64 -i keystore/release.jks | tr -d '\n' | pbcopy
 #   Linux:  base64 -w0 keystore/release.jks
 #
-# Without those secrets the job still succeeds but publishes a debug-signed APK, which
-# existing users cannot install as an update. Keep the secrets.
+# 没配密钥也能跑通，但产物是 debug 签名的 —— 已有用户装不上（Android 判断"能否覆盖安装"
+# 看的是签名而不是包名）。所以正式发布务必配好这四个。
+
 on:
   push:
     tags: [ 'v*' ]
@@ -25,6 +27,14 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # 用 env 而不是把 ${{ secrets.X }} 直接插值进脚本：密码里如果出现引号、$ 或换行，
+      # 文本替换会让 shell 把脚本解析坏；走环境变量则原样传递。
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,27 +47,30 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # 显式装齐构建用的组件，不依赖 AGP 的自动下载 —— 自动下载失败时的报错很难读，
+      # 而且下面验证签名那一步需要 apksigner 确实存在。
+      - name: Install SDK components
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Restore the signing keystore
         id: keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "No keystore secret configured; the APK will be debug-signed."
+            echo "::warning::KEYSTORE_BASE64 未配置，将产出 debug 签名的 APK（不能作为正式版更新分发）"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           mkdir -p keystore
-          echo "$KEYSTORE_BASE64" | base64 -d > keystore/release.jks
-          cat > keystore.properties <<PROPS
-          storeFile=keystore/release.jks
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          PROPS
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > keystore/release.jks
+          {
+            echo "storeFile=keystore/release.jks"
+            echo "storePassword=${KEYSTORE_PASSWORD}"
+            echo "keyAlias=${KEY_ALIAS}"
+            echo "keyPassword=${KEY_PASSWORD}"
+          } > keystore.properties
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Unit tests
@@ -66,25 +79,55 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease
 
-      - name: Fail if the APK is not properly signed
+      # 签名是"应用的身份"：这一步确认产出真的用了你的密钥，而不是悄悄回退到 debug 签名。
+      # apksigner 的路径不写死版本号 —— runner 上装的是哪个版本不由我们决定。
+      - name: Verify the APK is signed with the release key
         if: steps.keystore.outputs.signed == 'true'
         run: |
+          set -euo pipefail
           APK=app/build/outputs/apk/release/app-release.apk
-          $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name apksigner -type f | sort -V | tail -1)
+          echo "使用 $APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK"
+          # build.gradle.kts 在找不到 keystore 时会退回 debug 签名；这里再确认一次没走那条路。
+          if "$APKSIGNER" verify --print-certs "$APK" | grep -q "CN=Android Debug"; then
+            echo "::error::APK 用的是 debug 签名，说明 keystore 没有被正确加载"
+            exit 1
+          fi
 
+      # 关键顺序：**在任何上传步骤之前**删掉密钥。
+      # 就算后面的步骤被改坏，密钥也不会进 artifact 或 Release。
       - name: Remove the keystore before anything is uploaded
         if: always()
         run: rm -rf keystore keystore.properties
 
-      - name: Rename the APK
+      - name: Rename the APK and compute checksums
+        id: package
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          [ -z "$VERSION" ] && VERSION="dev"
+          set -euo pipefail
+          # 只有 tag 触发才有版本号；手动 dispatch 时 GITHUB_REF_NAME 是分支名，不能当版本用。
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk "out/slaier-${VERSION}.apk"
-          cd out && shasum -a 256 ./*.apk | tee SHA256SUMS.txt
+          cd out
+          sha256sum ./*.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload the APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slaier-apk
+          path: out/
 
       - name: Publish the release
+        # 手动 dispatch（没有 tag）时不建 Release，只留 artifact 供下载。
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
