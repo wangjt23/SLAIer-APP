@@ -67,6 +67,8 @@
     <string name="settings_clear_session">清除登录状态</string>
     <string name="settings_clear_session_summary">清除 WebView Cookie，下次需要重新登录</string>
     <string name="settings_first_week_monday">学期第一周星期一</string>
+    <string name="settings_show_timetable_on_home">首页显示课表</string>
+    <string name="settings_show_timetable_on_home_summary">关掉后首页只显示考勤；课表页仍然保留（博二、博三没课时用）</string>
     <string name="settings_first_week_monday_summary">用于把“第 N 周”换算成具体日期</string>
     <string name="settings_student_id">学号（可选）</string>
     <string name="settings_student_id_summary">仅用于区分不同账号的本地缓存，不会上传</string>
@@ -76,6 +78,9 @@
     <string name="settings_reminder_exact_summary">需要系统授予“闹钟与提醒”权限，未授予时自动降级</string>
     <string name="settings_notification_permission">通知权限</string>
     <string name="settings_sis_base_url">教务系统地址</string>
+    <string name="settings_sis_base_url_summary">站点地址（sis.slai.edu.cn）或应用地址（…/yjsxt）都可以，缺失的部分会自动补全</string>
+    <string name="settings_sis_resolved_entry">登录入口：%1$s</string>
+    <string name="settings_sis_resolved_base">课表接口前缀：%1$s</string>
     <string name="settings_stu_base_url">学生系统地址</string>
     <string name="settings_reset_defaults">恢复默认地址</string>
     <string name="settings_diagnostics">开发者诊断</string>
@@ -154,6 +159,7 @@
     <string name="home_attendance_title">今日考勤</string>
     <string name="home_syncing_bg">后台同步中…</string>
     <string name="home_login_syncing">登录完成，正在同步课表…</string>
+    <string name="web_login_autoclose_hint">登录成功后会自动返回，无需手动关闭此页</string>
     <string name="home_progress">/ %1$s</string>
     <string name="source_provider">来源：自定义接口</string>
     <string name="source_webview">来源：网页接口提取</string>

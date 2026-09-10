@@ -48,8 +48,10 @@ android {
         vectorDrawables.useSupportLibrary = true
 
         // Default endpoints. They can also be overridden at runtime in Settings.
+        //
+        // SIS 的登录入口没有单独的常量：它是从 base URL 推出来的（`{base}/htxylogin`），
+        // 这样用户在设置里改成站点根地址时入口会跟着走 —— 见 core/web/SisEndpoints.kt。
         buildConfigField("String", "DEFAULT_SIS_BASE_URL", "\"https://sis.slai.edu.cn/yjsxt\"")
-        buildConfigField("String", "DEFAULT_SIS_ENTRY_URL", "\"https://sis.slai.edu.cn/yjsxt/htxylogin\"")
         buildConfigField("String", "DEFAULT_STU_BASE_URL", "\"https://stu.slai.edu.cn\"")
         buildConfigField("String", "DEFAULT_STU_ENTRY_URL", "\"https://stu.slai.edu.cn/sso/login\"")
     }

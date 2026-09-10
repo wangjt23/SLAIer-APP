@@ -74,6 +74,8 @@
     <string name="settings_clear_session">Clear sign-in</string>
     <string name="settings_clear_session_summary">Clears the WebView cookies; you will sign in again next time</string>
     <string name="settings_first_week_monday">Monday of teaching week 1</string>
+    <string name="settings_show_timetable_on_home">Show timetable on Home</string>
+    <string name="settings_show_timetable_on_home_summary">Off keeps only attendance on Home; the timetable tab stays (useful once you have no classes left)</string>
     <string name="settings_first_week_monday_summary">Used to turn “week N” into actual dates</string>
     <string name="settings_student_id">Student ID (optional)</string>
     <string name="settings_student_id_summary">Only used to separate local caches between accounts; never uploaded</string>
@@ -83,6 +85,9 @@
     <string name="settings_reminder_exact_summary">Needs the “Alarms &amp; reminders” permission; falls back automatically if not granted</string>
     <string name="settings_notification_permission">Notification permission</string>
     <string name="settings_sis_base_url">Academic system URL</string>
+    <string name="settings_sis_base_url_summary">Either the site address (sis.slai.edu.cn) or the app address (…/yjsxt); the rest is filled in for you</string>
+    <string name="settings_sis_resolved_entry">Sign-in entry: %1$s</string>
+    <string name="settings_sis_resolved_base">Timetable endpoint prefix: %1$s</string>
     <string name="settings_stu_base_url">Student system URL</string>
     <string name="settings_reset_defaults">Restore default URLs</string>
     <string name="settings_diagnostics">Developer diagnostics</string>
@@ -161,6 +166,7 @@
     <string name="home_attendance_title">Today\'s attendance</string>
     <string name="home_syncing_bg">Syncing in background…</string>
     <string name="home_login_syncing">Signed in, syncing timetable…</string>
+    <string name="web_login_autoclose_hint">Returns to the app automatically once you are signed in — no need to close this page</string>
     <string name="home_progress">/ %1$s</string>
     <string name="source_provider">Source: custom API</string>
     <string name="source_webview">Source: web API capture</string>

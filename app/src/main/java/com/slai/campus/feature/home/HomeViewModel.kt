@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -43,7 +44,9 @@ data class HomeUiState(
     val phase: RefreshPhase = RefreshPhase.IDLE,
     val attendanceGoalMinutes: Int = 360,
     val nowDateTime: java.time.LocalDateTime = java.time.LocalDateTime.now(),
-    val attendanceDaily: DailyAttendance? = null
+    val attendanceDaily: DailyAttendance? = null,
+    /** 设置里的「首页显示课表」。关掉之后首页只有考勤（高年级无课时用）。 */
+    val showTimetable: Boolean = true
 ) {
     /**
      * 今日累计打卡分钟数：优先用闸机流水配对计算（当天汇总字段恒为 0）。
@@ -123,13 +126,28 @@ class HomeViewModel @Inject constructor(
 
     private val todayPunches = attendanceRepository.observePunches(timeProvider.today())
 
+    /** 打卡流水 + 时钟 + 「首页显示课表」开关；凑在一起只是因为 combine 最多收 5 个流。 */
+    private data class LivePart(
+        val punches: List<AttendancePunch>,
+        val now: java.time.LocalDateTime,
+        val showTimetable: Boolean
+    )
+
+    private val livePart = combine(
+        todayPunches,
+        clock,
+        sessionStore.showTimetableOnHome
+    ) { punches, now, showTimetable ->
+        LivePart(punches, now, showTimetable)
+    }
+
     val state: StateFlow<HomeUiState> = combine(
         schedulePart,
         sessionManager.state,
         urlProvider.urls,
         attendanceGoal,
-        combine(todayPunches, clock) { punches, now -> punches to now }
-    ) { part, session, urls, goal, punchesAndNow ->
+        livePart
+    ) { part, session, urls, goal, live ->
         HomeUiState(
             today = part.today,
             syncState = part.syncState,
@@ -141,12 +159,13 @@ class HomeViewModel @Inject constructor(
             urls = urls,
             phase = part.phase,
             attendanceGoalMinutes = goal,
-            nowDateTime = punchesAndNow.second,
+            nowDateTime = live.now,
             attendanceDaily = PunchPairing.of(
                 timeProvider.today(),
-                punchesAndNow.first,
-                punchesAndNow.second
-            )
+                live.punches,
+                live.now
+            ),
+            showTimetable = live.showTimetable
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
@@ -159,7 +178,10 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             // A silent refresh at app start; the UI renders the cache while this runs.
-            if (sessionManager.stateOf(SchoolSystem.SIS) == SessionState.AUTHENTICATED) {
+            // 首页不显示课表时干脆不请求：那块数据没人看，没必要为它唤醒一次网络。
+            if (sessionStore.showTimetableOnHome.first() &&
+                sessionManager.stateOf(SchoolSystem.SIS) == SessionState.AUTHENTICATED
+            ) {
                 scheduleRepository.refresh(RefreshReason.APP_START)
             }
         }

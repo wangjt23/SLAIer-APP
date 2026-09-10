@@ -25,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -117,47 +118,54 @@ fun HomeScreen(
                 CampusHero(subtitle = stringResource(R.string.hero_subtitle))
             }
 
-            if (state.needsLogin) {
-                item { NeedsLoginCard(navigator, state) }
-            }
+            /*
+             * 课表区块整体受「设置 → 课表 → 首页显示课表」控制：博二、博三基本没课，首页上
+             * 一片"暂无课表数据"和一块同步状态都是噪音，关掉之后这里只剩考勤。
+             * 需要登录教务系统的那张提示卡也属于课表区块 —— 不看课表的人不该被催着登录。
+             */
+            if (state.showTimetable) {
+                if (state.needsLogin) {
+                    item { NeedsLoginCard(navigator, state) }
+                }
 
-            when {
-                refreshing && state.today.isEmpty() -> item { LoadingCard(state.phase) }
+                when {
+                    refreshing && state.today.isEmpty() -> item { LoadingCard(state.phase) }
 
-                state.today.isEmpty() -> item {
-                    EmptyTodayCard(
-                        isFirstRun = state.isFirstRun,
-                        onLogin = {
-                            val entry = state.urls?.sisEntry
-                            if (entry != null) {
-                                navigator.openWeb(entry, signInLabel, SchoolSystem.SIS, true)
-                            } else {
-                                navigator.openTab(Tab.SETTINGS)
+                    state.today.isEmpty() -> item {
+                        EmptyTodayCard(
+                            isFirstRun = state.isFirstRun,
+                            onLogin = {
+                                val entry = state.urls?.sisEntry
+                                if (entry != null) {
+                                    navigator.openWeb(entry, signInLabel, SchoolSystem.SIS, true)
+                                } else {
+                                    navigator.openTab(Tab.SETTINGS)
+                                }
+                            },
+                            onOpenWeb = {
+                                state.urls?.sisSchedulePage?.let {
+                                    navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
+                                }
                             }
-                        },
-                        onOpenWeb = {
-                            state.urls?.sisSchedulePage?.let {
-                                navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                            }
-                        }
+                        )
+                    }
+
+                    else -> items(state.today, key = { it.id }) { occurrence ->
+                        ClassCard(occurrence)
+                    }
+                }
+
+                item {
+                    SyncRow(
+                        state = state,
+                        refreshing = refreshing,
+                        backgroundSyncing = backgroundSyncing,
+                        onRefresh = viewModel::refresh
                     )
                 }
 
-                else -> items(state.today, key = { it.id }) { occurrence ->
-                    ClassCard(occurrence)
-                }
+                item { HorizontalDivider() }
             }
-
-            item {
-                SyncRow(
-                    state = state,
-                    refreshing = refreshing,
-                    backgroundSyncing = backgroundSyncing,
-                    onRefresh = viewModel::refresh
-                )
-            }
-
-            item { HorizontalDivider() }
 
             item { SectionHeader(stringResource(R.string.home_attendance_title)) }
 
@@ -177,24 +185,28 @@ fun HomeScreen(
                 )
             }
 
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { navigator.openTab(Tab.SCHEDULE) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(stringResource(R.string.action_week_schedule)) }
+            // 这两个入口都是课表相关的（本周课表 / 教务系统首页），隐藏课表时一并收起；
+            // 课表 Tab 本身仍然保留，需要时从底部导航进。
+            if (state.showTimetable) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { navigator.openTab(Tab.SCHEDULE) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(stringResource(R.string.action_week_schedule)) }
 
-                    OutlinedButton(
-                        onClick = {
-                            state.urls?.sisHomePage?.let {
-                                navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(stringResource(R.string.action_open_sis)) }
+                        OutlinedButton(
+                            onClick = {
+                                state.urls?.sisHomePage?.let {
+                                    navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(stringResource(R.string.action_open_sis)) }
+                    }
                 }
             }
 
@@ -422,14 +434,25 @@ private fun SyncRow(
                 )
             }
 
-            Button(onClick = onRefresh, enabled = !refreshing) {
+            /*
+             * 刷新是个"偶尔才用"的动作（课表一天变不了几次），所以这里只留一个 20dp 的小图标，
+             * 不再用占满半行的实心按钮 —— 状态文字才是这一行真正要传达的东西。
+             */
+            IconButton(
+                onClick = onRefresh,
+                enabled = !refreshing,
+                modifier = Modifier.size(36.dp)
+            ) {
                 if (refreshing) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = stringResource(R.string.action_refresh),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
-                Spacer(modifier = Modifier.size(6.dp))
-                Text(stringResource(R.string.action_refresh))
             }
         }
 
@@ -536,7 +559,7 @@ private fun AttendanceCard(
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = onRefresh, label = { Text("刷新") })
+                AssistChip(onClick = onRefresh, label = { Text(stringResource(R.string.action_refresh)) })
                 AssistChip(onClick = onOpenTab, label = { Text(stringResource(R.string.attendance_title)) })
                 AssistChip(onClick = onOpenWeb, label = { Text(stringResource(R.string.action_open_stu)) })
             }

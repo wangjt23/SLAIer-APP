@@ -30,7 +30,15 @@ sealed interface Overlay {
         /** True when this WebView is completing a login and should trigger a probe + refresh. */
         val isLoginFlow: Boolean = false,
         /** True when this WebView is recording the page's own requests (endpoint learning). */
-        val captureEnabled: Boolean = false
+        val captureEnabled: Boolean = false,
+        /**
+         * 登录成功后是否自动关掉这个 WebView。
+         *
+         * 默认跟 [isLoginFlow] 走 —— 用户点的是"登录"，意图就是回来用 App，没必要让他自己去找左上角的 X。
+         * 但**为了看网页**而打开的 WebView 必须显式传 false：那种页面即使顺路走了一遍 SSO，用户也是
+         * 站在自己想看的页面上，把他踢回 App 是帮倒忙（见 CampusRoot 里那条"死胡同 → SSO"的兜底）。
+         */
+        val closeOnLogin: Boolean = isLoginFlow
     ) : Overlay
 
     data object Diagnostics : Overlay

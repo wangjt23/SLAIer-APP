@@ -15,6 +15,7 @@ import com.slai.campus.data.provider.GenericTimetableParser
 import com.slai.campus.data.provider.ProviderExecutor
 import com.slai.campus.data.provider.ProviderLearner
 import com.slai.campus.data.provider.ProviderStore
+import com.slai.campus.data.sis.SisConfig
 import com.slai.campus.data.sis.SisRemoteDataSource
 import com.slai.campus.domain.provider.ApiProvider
 import com.slai.campus.domain.provider.ProviderPurpose
@@ -38,7 +39,7 @@ data class ProviderUiState(
     val editorError: String? = null,
     val busy: Boolean = false,
     val log: String = "",
-    val captureStartUrl: String = com.slai.campus.BuildConfig.DEFAULT_SIS_ENTRY_URL,
+    val captureStartUrl: String = SisConfig.defaultEntryUrl,
     val captureSummary: String = "",
     val hasCapture: Boolean = false
 )
@@ -65,7 +66,7 @@ class ProviderViewModel @Inject constructor(
     private val error = MutableStateFlow<String?>(null)
     private val busy = MutableStateFlow(false)
     private val log = MutableStateFlow("")
-    private val captureStartUrl = MutableStateFlow(com.slai.campus.BuildConfig.DEFAULT_SIS_ENTRY_URL)
+    private val captureStartUrl = MutableStateFlow(SisConfig.defaultEntryUrl)
     private val lastCapture = MutableStateFlow<List<CaptureRecord>>(emptyList())
     private val lastRequests = MutableStateFlow<List<InterceptedRequest>>(emptyList())
 
@@ -101,6 +102,8 @@ class ProviderViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // 抓包要从**当前**地址的登录入口开始：用户在设置里改过地址时，构建期常量就不准了。
+            captureStartUrl.value = SisConfig.entryUrlOrDefault(sessionStore.baseUrl(SchoolSystem.SIS))
             captureBus.pending.collect { session ->
                 if (session != null) {
                     captureBus.clear()

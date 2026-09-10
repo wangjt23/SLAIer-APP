@@ -49,6 +49,7 @@ import com.slai.campus.BuildConfig
 import com.slai.campus.R
 import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.core.session.SessionSnapshot
+import com.slai.campus.core.web.SisEndpoints
 import com.slai.campus.navigation.AppNavigator
 import java.time.Instant
 import java.time.LocalDate
@@ -113,6 +114,16 @@ fun SettingsScreen(
 
             // ---- schedule ------------------------------------------------------------------
             Text(stringResource(R.string.settings_section_schedule), style = MaterialTheme.typography.titleMedium)
+
+            SettingRow(
+                title = stringResource(R.string.settings_show_timetable_on_home),
+                summary = stringResource(R.string.settings_show_timetable_on_home_summary)
+            ) {
+                Switch(
+                    checked = state.showTimetableOnHome,
+                    onCheckedChange = viewModel::setShowTimetableOnHome
+                )
+            }
 
             SettingRow(
                 title = stringResource(R.string.settings_first_week_monday),
@@ -193,13 +204,28 @@ fun SettingsScreen(
             var sisUrl by remember(state.urls) { mutableStateOf(state.urls?.sisBase.orEmpty()) }
             var stuUrl by remember(state.urls) { mutableStateOf(state.urls?.stuBase.orEmpty()) }
 
+            // 填进来的地址可能是站点根，也可能是应用地址；这里把实际会用到的两个地址摊开给用户看，
+            // 免得「登录能过但课表拉不到」这种问题只能靠猜。
+            val sisResolved = remember(sisUrl) { SisEndpoints.of(sisUrl) }
+
             OutlinedTextField(
                 value = sisUrl,
                 onValueChange = { sisUrl = it },
                 label = { Text(stringResource(R.string.settings_sis_base_url)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                supportingText = { Text(stringResource(R.string.settings_sis_base_url_summary)) },
                 modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = stringResource(R.string.settings_sis_resolved_entry, sisResolved.entry),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = stringResource(R.string.settings_sis_resolved_base, sisResolved.base),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedTextField(
                 value = stuUrl,

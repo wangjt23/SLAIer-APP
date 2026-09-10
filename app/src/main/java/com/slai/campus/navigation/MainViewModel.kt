@@ -8,6 +8,7 @@ import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.core.session.SessionManager
 import com.slai.campus.core.web.AppUrlProvider
 import com.slai.campus.core.web.CaptureSession
+import com.slai.campus.core.web.SisEndpoints
 import com.slai.campus.data.provider.CaptureBus
 import com.slai.campus.core.session.SessionSnapshot
 import com.slai.campus.core.session.SessionState
@@ -16,8 +17,11 @@ import com.slai.campus.domain.schedule.ScheduleRepository
 import com.slai.campus.worker.ScheduleSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -41,13 +45,32 @@ class MainViewModel @Inject constructor(
 
     val session: StateFlow<SessionSnapshot> = sessionManager.state
 
+    /**
+     * 规范化后的教务系统地址：站点 / 应用根（`/yjsxt`）/ SSO 入口。
+     *
+     * WebView 需要它来判断「学校是不是把用户丢到了正方自带的账号密码页上」——那是一条死胡同，
+     * 得改走 SSO 入口，否则首次登录的用户会卡在一个永远登不进去的表单上（见 [SisEndpoints]）。
+     */
+    val sisEndpoints: StateFlow<SisEndpoints> = urlProvider.urls
+        .map { it.sisEndpoints }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SisEndpoints.of(null))
+
     /** Where the capture tool starts from (honours a user override of the base URL). */
-    val sisEntryUrl: StateFlow<String> = urlProvider.urls
-        .map { it.sisEntry }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), com.slai.campus.BuildConfig.DEFAULT_SIS_ENTRY_URL)
+    val sisEntryUrl: StateFlow<String> = sisEndpoints
+        .map { it.entry }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SisEndpoints.of(null).entry)
 
     private val _webCompleting = MutableStateFlow(false)
     val webCompleting: StateFlow<Boolean> = _webCompleting.asStateFlow()
+
+    /**
+     * 登录**确认成功**（探活通过）时发一次事件，让 WebView 自己退场。
+     *
+     * 用事件而不是状态：这是"刚刚发生了一次"，不是"当前处于某种状态"，
+     * 重新收集不应该再关一次页面。
+     */
+    private val _loginCompleted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val loginCompleted: SharedFlow<Unit> = _loginCompleted.asSharedFlow()
 
     init {
         viewModelScope.launch {
@@ -81,6 +104,9 @@ class MainViewModel @Inject constructor(
                 val state = sessionManager.probe(landed)
                 AppLog.i("login flow finished for $landed: $state")
                 if (state == SessionState.AUTHENTICATED) {
+                    // 先让 WebView 退场，再刷新课表：用户马上回到 App 并看到"正在同步"，
+                    // 不必等这一轮请求跑完（那可能要好几秒）。
+                    _loginCompleted.tryEmit(Unit)
                     sessionManager.requireAccountHash()
                     scheduleRepository.refresh(RefreshReason.AFTER_LOGIN)
                     ScheduleSyncWorker.enqueuePeriodic(appContext)

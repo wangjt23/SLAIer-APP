@@ -2,12 +2,16 @@ package com.slai.campus.data.sis
 
 import com.slai.campus.BuildConfig
 import com.slai.campus.core.common.SchoolSystem
+import com.slai.campus.core.web.SisEndpoints
 
 /**
  * Everything we know about the school's academic-affairs system, in one place.
  *
- * Reconnaissance (unauthenticated, 2026-09-09) established:
+ * Reconnaissance (unauthenticated, 2026-09-09; re-checked 2026-09-10) established:
  *  - `https://sis.slai.edu.cn/` is a JS redirector to `/yjsxt/htxylogin`;
+ *  - `/yjsxt` alone is **not** an entry: it answers `302 -> /yjsxt/` →
+ *    `302 -> /yjsxt/xtgl/login_slogin.html`, the vendor's own password form, which has no link to
+ *    the identity provider. Anyone who lands there is stuck — see [SisEndpoints];
  *  - `/yjsxt/htxylogin` answers `302 -> sts.slai.edu.cn/adfs/oauth2/authorize` with
  *    `client_id=74c2df64-…`, `redirect_uri=…/yjsxt/htxylogin` (AD FS OAuth 2.0 authorization code);
  *  - the application behind it is **ZFSoft v5** (`/yjsxt/xtgl/login_slogin.html`,
@@ -31,11 +35,16 @@ object SisConfig {
     /** Base path of the ZFSoft application. Overridable in Settings. */
     val defaultBaseUrl: String = BuildConfig.DEFAULT_SIS_BASE_URL
 
-    /** Entry point that starts the AD FS OAuth dance. */
-    val defaultEntryUrl: String = BuildConfig.DEFAULT_SIS_ENTRY_URL
+    /**
+     * 构建期默认地址对应的登录入口。
+     *
+     * 正常情况下入口由 [entryUrlFor] 从**当前** baseUrl 推出来（用户在设置里改地址时它得跟着走），
+     * 这个常量只在「还没有 baseUrl 可用」时兜底。见 [SisEndpoints]。
+     */
+    val defaultEntryUrl: String = SisEndpoints.of(null).entry
 
     /** Where an unauthenticated request lands. Presence of this marker == session expired. */
-    const val LOGIN_PAGE_PATH = "/xtgl/login_slogin.html"
+    const val LOGIN_PAGE_PATH = SisEndpoints.VENDOR_LOGIN_PATH
 
     /** Page title of the ZFSoft login screen; used for the "200 but it's the login page" case. */
     const val LOGIN_PAGE_TITLE = "教务管理系统"
@@ -113,9 +122,18 @@ object SisConfig {
 
     fun apiUrl(baseUrl: String, template: String): String = template.replace("{base}", baseUrl.trimEnd('/'))
 
-    fun baseUrlOrDefault(configured: String?): String =
-        configured?.takeIf { it.isNotBlank() } ?: defaultBaseUrl
+    /**
+     * 把设置里那一个地址规范化成「应用根」。见 [SisEndpoints]：填站点根（`https://sis.slai.edu.cn`）
+     * 和填应用地址（`…/yjsxt`）都得能拉课表，否则用户照着「登录要从根地址进」的说法一改设置，课表就没了。
+     */
+    fun baseUrlOrDefault(configured: String?): String = SisEndpoints.of(configured).base
 
-    fun entryUrlOrDefault(configured: String?): String =
-        configured?.takeIf { it.isNotBlank() } ?: defaultEntryUrl
+    /**
+     * 登录入口。**不是** `{origin}/yjsxt`：那条路径在未登录时 302 到正方自带的账号密码页，
+     * 学生没有本地密码，也没有通往统一身份认证的链接，进去就是死胡同。
+     */
+    fun entryUrlOrDefault(configured: String?): String = SisEndpoints.of(configured).entry
+
+    /** 已知 baseUrl 时推登录入口（静默续期用）。 */
+    fun entryUrlFor(baseUrl: String): String = SisEndpoints.of(baseUrl).entry
 }

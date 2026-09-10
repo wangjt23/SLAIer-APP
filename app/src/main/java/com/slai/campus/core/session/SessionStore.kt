@@ -63,6 +63,14 @@ class SessionStore @Inject constructor(
         /** 深浅色（system / light / dark）。默认跟随系统。 */
         val APP_THEME = stringPreferencesKey("app_theme")
 
+        /**
+         * 首页是否显示课表区块。默认显示。
+         *
+         * 课表不是所有人都需要：博二、博三基本没课，首页全是"暂无课表数据"反而是噪音，
+         * 关掉之后首页只剩考勤。
+         */
+        val SHOW_TIMETABLE_ON_HOME = booleanPreferencesKey("show_timetable_on_home")
+
         /** Occurrence ids that currently have a scheduled alarm, so stale ones can be cancelled. */
         val SCHEDULED_REMINDERS = androidx.datastore.preferences.core.stringSetPreferencesKey("scheduled_reminders")
     }
@@ -178,6 +186,18 @@ class SessionStore @Inject constructor(
     /** (sisBase, stuBase), either of which may be null when the user has not overridden it. */
     val baseUrls: Flow<Pair<String?, String?>> = context.sessionDataStore.data.map { prefs ->
         prefs[Keys.SIS_BASE_URL] to prefs[Keys.STU_BASE_URL]
+    }
+
+    /**
+     * 首页要不要显示课表。默认 true —— 关闭是「我确实不需要课表」的显式选择，
+     * 所以没有值时不能猜成 false。
+     */
+    val showTimetableOnHome: Flow<Boolean> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.SHOW_TIMETABLE_ON_HOME] ?: true
+    }
+
+    suspend fun setShowTimetableOnHome(show: Boolean) {
+        context.sessionDataStore.edit { it[Keys.SHOW_TIMETABLE_ON_HOME] = show }
     }
 
     val reminderConfig: Flow<ReminderConfig> = context.sessionDataStore.data.map { prefs ->

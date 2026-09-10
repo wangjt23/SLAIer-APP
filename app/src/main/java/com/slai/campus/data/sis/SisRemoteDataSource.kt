@@ -482,7 +482,8 @@ class SisRemoteDataSource @Inject constructor(
     suspend fun renewSession(baseUrl: String): Boolean = withContext(io) {
         if (!networkMonitor.hasNetwork) return@withContext false
 
-        var url = SisConfig.entryUrlOrDefault(null).ifBlank { "$baseUrl/htxylogin" }
+        // 入口要从**当前** baseUrl 推，不能用构建期常量：用户在设置里改了地址，续期也得跟着走。
+        var url = SisConfig.entryUrlFor(baseUrl)
         val visited = mutableSetOf<String>()
         // Captured once: a computed getter would hand back a fresh 15 s window on every read and the
         // loop could never time out.

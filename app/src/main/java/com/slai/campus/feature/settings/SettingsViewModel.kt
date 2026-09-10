@@ -44,7 +44,9 @@ data class SettingsUiState(
     val exactAlarmAllowed: Boolean = false,
     val notificationsAllowed: Boolean = false,
     val language: com.slai.campus.core.common.AppLanguage = com.slai.campus.core.common.AppLanguage.SYSTEM,
-    val theme: com.slai.campus.core.common.AppTheme = com.slai.campus.core.common.AppTheme.SYSTEM
+    val theme: com.slai.campus.core.common.AppTheme = com.slai.campus.core.common.AppTheme.SYSTEM,
+    /** 首页是否显示课表区块。默认显示。 */
+    val showTimetableOnHome: Boolean = true
 )
 
 @HiltViewModel
@@ -81,20 +83,25 @@ class SettingsViewModel @Inject constructor(
         extras
     ) { session, urls, reminders, extra -> Core(session, urls, reminders, extra) }
 
-    private data class Appearance(
+    private data class UiPrefs(
         val language: com.slai.campus.core.common.AppLanguage,
-        val theme: com.slai.campus.core.common.AppTheme
+        val theme: com.slai.campus.core.common.AppTheme,
+        val showTimetableOnHome: Boolean
     )
 
-    // combine() 只到 5 个 flow，所以语言和主题先自己合成一个。
-    private val appearance = combine(sessionStore.appLanguage, sessionStore.appTheme) { l, t ->
-        Appearance(l, t)
+    // combine() 只到 5 个 flow，所以这几项"改了就立刻生效"的纯界面偏好先自己合成一个。
+    private val uiPrefs = combine(
+        sessionStore.appLanguage,
+        sessionStore.appTheme,
+        sessionStore.showTimetableOnHome
+    ) { language, theme, showTimetable ->
+        UiPrefs(language, theme, showTimetable)
     }
 
     val state: StateFlow<SettingsUiState> = combine(
         core,
-        appearance
-    ) { c, appearance ->
+        uiPrefs
+    ) { c, prefs ->
         SettingsUiState(
             session = c.session,
             urls = c.urls,
@@ -104,8 +111,9 @@ class SettingsViewModel @Inject constructor(
             studentIdHint = c.extra.studentIdHint,
             exactAlarmAllowed = reminderScheduler.canScheduleExactAlarms(),
             notificationsAllowed = NotificationHelper.canPostNotifications(appContext),
-            language = appearance.language,
-            theme = appearance.theme
+            language = prefs.language,
+            theme = prefs.theme,
+            showTimetableOnHome = prefs.showTimetableOnHome
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
@@ -117,6 +125,11 @@ class SettingsViewModel @Inject constructor(
     /** 切换深浅色，同样即时生效。 */
     fun setTheme(theme: com.slai.campus.core.common.AppTheme) {
         viewModelScope.launch { sessionStore.setAppTheme(theme) }
+    }
+
+    /** 首页要不要显示课表。关掉后首页只剩考勤（高年级没课时用）。 */
+    fun setShowTimetableOnHome(show: Boolean) {
+        viewModelScope.launch { sessionStore.setShowTimetableOnHome(show) }
     }
 
     init {

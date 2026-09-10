@@ -10,11 +10,17 @@ import javax.inject.Singleton
 
 /** The four URLs the UI needs: where to log in and where to open the original page. */
 data class AppUrls(
-    val sisBase: String,
-    val sisEntry: String,
+    /**
+     * SIS is not one URL but three (site / application / SSO entry), derived from the single address
+     * the user typed — see [SisEndpoints] for why mixing them up breaks login *and* the timetable.
+     */
+    val sisEndpoints: SisEndpoints,
     val stuBase: String,
     val stuEntry: String
 ) {
+    val sisBase: String get() = sisEndpoints.base
+    val sisEntry: String get() = sisEndpoints.entry
+
     val sisHomePage: SchoolPage get() = SchoolPage.sisHome(sisBase)
     val sisSchedulePage: SchoolPage get() = SchoolPage.sisSchedule(sisBase)
     val sisCourseSelectionPage: SchoolPage get() = SchoolPage.sisCourseSelection(sisBase)
@@ -55,11 +61,10 @@ class AppUrlProvider @Inject constructor(
     )
 
     private fun resolve(sisOverride: String?, stuOverride: String?): AppUrls {
-        val sisBase = sisOverride?.takeIf { it.isNotBlank() } ?: BuildConfig.DEFAULT_SIS_BASE_URL
+        val sis = SisEndpoints.of(sisOverride)
         val stuBase = stuOverride?.takeIf { it.isNotBlank() } ?: BuildConfig.DEFAULT_STU_BASE_URL
         return AppUrls(
-            sisBase = sisBase.trimEnd('/'),
-            sisEntry = BuildConfig.DEFAULT_SIS_ENTRY_URL,
+            sisEndpoints = sis,
             stuBase = stuBase.trimEnd('/'),
             stuEntry = BuildConfig.DEFAULT_STU_ENTRY_URL
         )

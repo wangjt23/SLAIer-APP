@@ -78,7 +78,12 @@ fun SchoolWebScreen(
      * ordinary browsing.
      */
     captureEnabled: Boolean = false,
-    onFinishCapture: ((CaptureSession) -> Unit)? = null
+    onFinishCapture: ((CaptureSession) -> Unit)? = null,
+    /**
+     * 顶部一行说明文字（可选）。登录流程用它提前告诉用户"成功后会自动返回"，
+     * 免得用户输完密码后不知道该不该关掉这个页面。
+     */
+    hint: String? = null
 ) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -199,6 +204,15 @@ fun SchoolWebScreen(
                             "请在页面里打开一次课表，然后点右上角 ✓ 完成。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+
+                if (hint != null) {
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
                 }
