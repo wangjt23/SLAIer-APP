@@ -20,9 +20,15 @@
 
 ## 截图
 
-| 首页                                | 课表                                | 考勤                                |
-| ----------------------------------- | ----------------------------------- | ----------------------------------- |
-| ![](docs/screenshots/realuse01.jpg) | ![](docs/screenshots/realuse02.jpg) | ![](docs/screenshots/realuse03.jpg) |
+<!--
+  三列截图。用显式的 width 而不是纯 ![](...)：
+  GitHub 的表格是 `table-layout: auto`，列宽按内容算，图片尺寸不一致时就会渲染成不同大小
+  （之前那张 540px 的比另外两张 1080px 的明显小一圈）。写死宽度后三列一定等宽。
+  图片本身也统一成了 540x1170，在 250px 显示宽度下约等于 2x，足够清晰。
+-->
+| 首页 | 课表 | 考勤 |
+|:--:|:--:|:--:|
+| <img src="docs/screenshots/realuse01.jpg" width="250" alt="首页：今日课程与打卡时长"> | <img src="docs/screenshots/realuse02.jpg" width="250" alt="课表：本周课程与上下课时间"> | <img src="docs/screenshots/realuse03.jpg" width="250" alt="考勤：当日累计时长与本月明细"> |
 
 > 主题与语言都可以在设置里手动指定（跟随系统 / 浅色 / 深色，跟随系统 / 简体中文 / English），
 > 两者默认都**跟随系统** —— 开了深色的手机第一次打开就是深色，英文手机第一次打开就是英文。
