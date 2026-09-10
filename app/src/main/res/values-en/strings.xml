@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  English UI.
+
+  Note: course names, teacher names, room names and the school's own verdicts
+  (工作日 / 合格 / …) come from the school's servers in Chinese and are shown verbatim —
+  they are data, not UI copy, so they are not translated here.
+-->
+<resources>
+    <string name="app_name">SLAIer</string>
+    <string name="app_name_debug">SLAIer Debug</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_schedule">Schedule</string>
+    <string name="nav_attendance">Attendance</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Home -->
+    <string name="home_title">Today</string>
+    <string name="home_no_class">No classes today</string>
+    <string name="home_no_data">No timetable yet</string>
+    <string name="home_no_data_hint">Sign in to the academic system and refresh once to load your timetable. You can also open the school page directly.</string>
+    <string name="home_last_sync">Last synced: %1$s</string>
+    <string name="home_never_synced">Never synced</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_open_web">Open school page</string>
+    <string name="action_login">Sign in</string>
+    <string name="action_relogin">Sign in again</string>
+    <string name="action_view_cache">View cached data</string>
+    <string name="action_open_sis">Academic system</string>
+    <string name="action_open_stu">Student system</string>
+    <string name="action_week_schedule">This week</string>
+    <string name="action_diagnostics">Diagnostics</string>
+
+    <!-- Sync state -->
+    <string name="state_ok">Synced</string>
+    <string name="state_syncing">Syncing…</string>
+    <string name="state_offline">Offline, showing cache</string>
+    <string name="state_needs_login">Sign-in expired</string>
+    <string name="state_schema_changed">The school\'s response format may have changed</string>
+    <string name="state_server_error">Server error</string>
+    <string name="state_unknown_error">Unknown error</string>
+    <string name="state_never">Not synced yet</string>
+
+    <!-- Check-in -->
+    <string name="checkin_title">Check-in</string>
+    <string name="checkin_confirmed">Confirmed</string>
+    <string name="checkin_not_confirmed">Not confirmed</string>
+    <string name="checkin_unknown">Cannot confirm right now</string>
+    <string name="checkin_last_query">Last checked: %1$s</string>
+    <string name="checkin_never_queried">Not checked yet</string>
+    <string name="checkin_unknown_hint">The school system could not confirm your check-in status. This does not mean you missed it — please open the school page to verify.</string>
+    <string name="checkin_refresh">Refresh status</string>
+    <string name="checkin_open_web">Open the school check-in page</string>
+    <string name="checkin_web_only_hint">Check-in is currently provided as a web page, without a native adapter.</string>
+
+    <!-- Schedule -->
+    <string name="schedule_title">Schedule</string>
+    <string name="schedule_week_of">Week %1$d</string>
+    <string name="schedule_no_class_week">No classes this week</string>
+    <string name="schedule_empty">No timetable data</string>
+    <string name="schedule_today">Back to this week</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_section_session">Sign-in status</string>
+    <string name="settings_section_schedule">Timetable</string>
+    <string name="settings_section_reminder">Class reminders</string>
+    <string name="settings_section_advanced">Advanced</string>
+    <string name="settings_section_about">About</string>
+    <string name="settings_sis_session">Academic system (SIS)</string>
+    <string name="settings_stu_session">Student system (STU)</string>
+    <string name="settings_clear_session">Clear sign-in</string>
+    <string name="settings_clear_session_summary">Clears the WebView cookies; you will sign in again next time</string>
+    <string name="settings_first_week_monday">Monday of teaching week 1</string>
+    <string name="settings_first_week_monday_summary">Used to turn “week N” into actual dates</string>
+    <string name="settings_student_id">Student ID (optional)</string>
+    <string name="settings_student_id_summary">Only used to separate local caches between accounts; never uploaded</string>
+    <string name="settings_reminder_enabled">Enable class reminders</string>
+    <string name="settings_reminder_lead">Notify ahead by (minutes)</string>
+    <string name="settings_reminder_exact">Use exact alarms</string>
+    <string name="settings_reminder_exact_summary">Needs the “Alarms &amp; reminders” permission; falls back automatically if not granted</string>
+    <string name="settings_notification_permission">Notification permission</string>
+    <string name="settings_sis_base_url">Academic system URL</string>
+    <string name="settings_stu_base_url">Student system URL</string>
+    <string name="settings_reset_defaults">Restore default URLs</string>
+    <string name="settings_diagnostics">Developer diagnostics</string>
+    <string name="settings_version">Version %1$s (%2$d)</string>
+    <string name="settings_disclaimer">This app is a local viewer and cache for your own school pages. It never stores passwords, never checks in on your behalf, and never bypasses the school\'s authentication. All write actions must be done on the school\'s own web pages.</string>
+
+    <!-- Common -->
+    <string name="cd_back">Back</string>
+    <string name="cd_close">Close</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_save">Save</string>
+    <string name="common_confirm">OK</string>
+    <string name="common_retry">Retry</string>
+    <string name="common_loading">Loading…</string>
+    <string name="common_error">Something went wrong</string>
+    <string name="common_copy">Copy</string>
+    <string name="common_copied">Copied</string>
+
+    <!-- Web container -->
+    <string name="web_blocked">Blocked a link outside the school domains</string>
+    <string name="web_blocked_hint">That link points outside the school systems, so it was handed to your browser.</string>
+    <string name="web_ssl_error">Certificate check failed, loading stopped</string>
+    <string name="web_ssl_error_hint">For your safety this app never ignores certificate errors.</string>
+
+    <!-- Reminder notification -->
+    <string name="notification_channel_reminder">Class reminders</string>
+    <string name="notification_channel_reminder_desc">Local reminders before a class starts</string>
+    <string name="notification_channel_sync">Background sync</string>
+    <string name="notification_channel_sync_desc">Timetable background sync status</string>
+    <string name="notification_reminder_title">%1$s starts soon</string>
+    <string name="notification_reminder_body">%1$s · %2$s</string>
+
+    <!-- Diagnostics -->
+    <string name="diag_title">Developer diagnostics</string>
+    <string name="diag_sis_probe">Read my timetable (SIS native API)</string>
+    <string name="diag_sis_webview">Read my timetable (WebView extraction)</string>
+    <string name="diag_stu_probe">Read check-in status (STU)</string>
+    <string name="diag_session_probe">Probe session state</string>
+    <string name="diag_clear_output">Clear</string>
+    <string name="diag_export">Export redacted report</string>
+    <string name="diag_note">Output is automatically redacted (cookies / tokens / student ID / passwords). Please avoid including sensitive information in screenshots.</string>
+
+    <!-- Language -->
+    <string name="settings_section_language">Language</string>
+    <string name="settings_language">Display language</string>
+    <string name="settings_language_summary">Applies immediately; no restart needed</string>
+    <string name="language_system">Follow system</string>
+    <string name="language_zh">简体中文</string>
+    <string name="language_en">English</string>
+    <string name="reason_session_expired">Your academic-system sign-in has expired</string>
+    <string name="reason_never_signed_in">You have not signed in to the academic system yet</string>
+    <string name="reason_offline_no_cache">You are offline and no timetable has been cached yet</string>
+    <string name="reason_server_error">The academic server returned error %1$d</string>
+    <string name="reason_schema_changed">Could not understand the timetable response: %1$s</string>
+    <string name="reason_failed">Sync failed: %1$s</string>
+    <string name="reason_never_synced">The timetable has not been synced yet</string>
+    <string name="reason_session_hint">Academic-system sessions expire after roughly half an hour of inactivity, so you will occasionally need to sign in again.</string>
+    <string name="schedule_sign_in">Sign in</string>
+    <string name="schedule_back_home">Go to Home and refresh</string>
+    <string name="schedule_no_anchor_title">Teaching week 1 is not set</string>
+    <string name="schedule_no_anchor_body">The timetable is cached, but “week N” cannot be turned into dates. Please confirm the Monday of teaching week 1 in Settings.</string>
+    <string name="schedule_go_settings">Open Settings</string>
+    <string name="cd_previous_week">Previous week</string>
+    <string name="cd_next_week">Next week</string>
+    <string name="attendance_remaining">%1$s to go</string>
+    <string name="attendance_goal_reached">Goal reached</string>
+    <string name="attendance_no_record_today">No record for today yet</string>
+    <string name="attendance_month_total">%1$d days recorded this month (%2$s total)</string>
+    <string name="attendance_inside">Inside</string>
+    <string name="attendance_inside_school">%1$s on site (school record)</string>
+    <string name="attendance_rest_day">Rest day</string>
+    <string name="attendance_none">No record</string>
+    <string name="attendance_discarded_hint">An entry was never matched by an exit and passed 05:00 the next day, so that session is not counted.</string>
+    <string name="hero_subtitle">Shenzhen Loop Area Institute · Graduate companion</string>
+    <string name="home_attendance_today">Checked in today</string>
+    <string name="home_attendance_title">Today\'s attendance</string>
+    <string name="home_syncing_bg">Syncing in background…</string>
+    <string name="home_login_syncing">Signed in, syncing timetable…</string>
+    <string name="home_progress">/ %1$s</string>
+    <string name="source_provider">Source: custom API</string>
+    <string name="source_webview">Source: web API capture</string>
+    <string name="source_dom">Source: page parsing (may be incomplete)</string>
+    <string name="source_manual">Source: manual import</string>
+    <string name="attendance_title">Attendance</string>
+    <string name="attendance_month_detail">This month</string>
+    <string name="attendance_open_page">Open the school attendance page</string>
+    <string name="attendance_source_note">Data comes from the school\'s “student attendance query”. This app only reads; it never modifies any attendance record.</string>
+    <string name="attendance_school_stats">This month (school summary)</string>
+    <string name="attendance_qualified">Qualified</string>
+    <string name="attendance_unqualified">Not qualified</string>
+    <string name="attendance_days_progress">Qualified / required</string>
+    <string name="attendance_workdays">Workdays</string>
+    <string name="attendance_weekend_budget">Weekend allowance</string>
+    <string name="attendance_days_count">%1$d days</string>
+    <string name="attendance_times_count">%1$d</string>
+    <string name="attendance_school_record">School record %1$s</string>
+    <string name="attendance_no_day_data">No data for this day yet. You may not have swiped, or this month has not been synced.</string>
+    <string name="attendance_sessions">%1$d sessions, %2$s total</string>
+    <string name="attendance_first_in">First entry</string>
+    <string name="attendance_last_out">Last exit</string>
+    <string name="attendance_swipe_counts">Entries / exits</string>
+    <string name="attendance_school_ok">School: qualified</string>
+    <string name="attendance_school_fail">School: not qualified</string>
+    <string name="attendance_reading">Reading attendance…</string>
+    <string name="attendance_empty">No attendance data this month</string>
+    <string name="attendance_empty_hint">Sign in to the student system and refresh. You can also open the school page directly.</string>
+    <string name="attendance_stu_needs_login">Student-system sign-in expired</string>
+    <string name="attendance_stu_login">Sign in to the student system</string>
+    <string name="cd_previous_month">Previous month</string>
+    <string name="cd_next_month">Next month</string>
+    <string name="home_today_card">Today · %1$s</string>
+    <string name="hero_logo_cd">Shenzhen Loop Area Institute</string>
+    <string name="home_no_swipe_hint">No swipes recorded today yet — tap Refresh to read them from the student system</string>
+    <string name="home_no_duration">No time accumulated yet</string>
+    <string name="settings_anchor_confirmed">Confirmed:</string>
+    <string name="settings_anchor_estimated">Estimated:</string>
+    <string name="settings_anchor_unset">Not set (week numbers cannot be turned into dates)</string>
+    <string name="settings_pick_date">Pick a date</string>
+    <string name="settings_by_current_week">From current week</string>
+    <string name="settings_notif_granted">Notification permission granted</string>
+    <string name="settings_notif_denied">Notification permission denied; reminders will not appear</string>
+    <string name="settings_lead_current">Currently: %1$d minutes ahead</string>
+    <string name="settings_exact_denied">Exact-alarm permission not granted; normal reminders will be used</string>
+    <string name="settings_exact_enabled">Exact reminders enabled</string>
+    <string name="settings_grant">Grant</string>
+    <string name="settings_api_providers">API providers</string>
+    <string name="settings_which_week">Which teaching week is it now?</string>
+    <string name="settings_which_week_hint">The current week is shown on the school’s timetable page. Enter it and the app will work out the Monday of week 1.</string>
+    <string name="settings_week_number">Week</string>
+    <string name="settings_probe">Test</string>
+    <string name="settings_section_appearance">Appearance &amp; language</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_summary">Applies immediately; no restart needed</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+</resources>

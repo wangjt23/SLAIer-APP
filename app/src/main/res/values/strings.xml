@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SLAIer</string>
+    <string name="app_name_debug">SLAIer Debug</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_home">首页</string>
+    <string name="nav_schedule">课表</string>
+    <string name="nav_attendance">考勤</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- Home -->
+    <string name="home_title">今天</string>
+    <string name="home_no_class">今天没有课</string>
+    <string name="home_no_data">还没有课表数据</string>
+    <string name="home_no_data_hint">登录教务系统后刷新一次即可获得课表。也可以直接打开教务网页查看。</string>
+    <string name="home_last_sync">上次同步：%1$s</string>
+    <string name="home_never_synced">从未同步</string>
+    <string name="action_refresh">刷新</string>
+    <string name="action_open_web">打开原网页</string>
+    <string name="action_login">登录</string>
+    <string name="action_relogin">重新登录</string>
+    <string name="action_view_cache">继续查看缓存</string>
+    <string name="action_open_sis">教务系统</string>
+    <string name="action_open_stu">学生系统</string>
+    <string name="action_week_schedule">本周课表</string>
+    <string name="action_diagnostics">诊断</string>
+
+    <!-- Sync state -->
+    <string name="state_ok">已同步</string>
+    <string name="state_syncing">正在同步…</string>
+    <string name="state_offline">离线，显示缓存</string>
+    <string name="state_needs_login">需要重新登录</string>
+    <string name="state_schema_changed">接口结构可能已变化</string>
+    <string name="state_server_error">服务器错误</string>
+    <string name="state_unknown_error">未知错误</string>
+    <string name="state_never">尚未同步</string>
+
+    <!-- Check-in -->
+    <string name="checkin_title">今日打卡</string>
+    <string name="checkin_confirmed">已确认</string>
+    <string name="checkin_not_confirmed">未确认</string>
+    <string name="checkin_unknown">当前无法确认</string>
+    <string name="checkin_last_query">最后查询：%1$s</string>
+    <string name="checkin_never_queried">尚未查询</string>
+    <string name="checkin_unknown_hint">无法从学校系统确认打卡状态。这不代表“未打卡”，请打开学校原页面确认。</string>
+    <string name="checkin_refresh">刷新状态</string>
+    <string name="checkin_open_web">打开学校打卡页面</string>
+    <string name="checkin_web_only_hint">打卡功能当前以网页方式提供，未做原生化适配。</string>
+
+    <!-- Schedule -->
+    <string name="schedule_title">课表</string>
+    <string name="schedule_week_of">第 %1$d 周</string>
+    <string name="schedule_no_class_week">本周没有课</string>
+    <string name="schedule_empty">暂无课表数据</string>
+    <string name="schedule_today">回到本周</string>
+
+    <!-- Settings -->
+    <string name="settings_title">设置</string>
+    <string name="settings_section_session">登录状态</string>
+    <string name="settings_section_schedule">课表</string>
+    <string name="settings_section_reminder">上课提醒</string>
+    <string name="settings_section_advanced">高级</string>
+    <string name="settings_section_about">关于</string>
+    <string name="settings_sis_session">教务系统（SIS）</string>
+    <string name="settings_stu_session">学生系统（STU）</string>
+    <string name="settings_clear_session">清除登录状态</string>
+    <string name="settings_clear_session_summary">清除 WebView Cookie，下次需要重新登录</string>
+    <string name="settings_first_week_monday">学期第一周星期一</string>
+    <string name="settings_first_week_monday_summary">用于把“第 N 周”换算成具体日期</string>
+    <string name="settings_student_id">学号（可选）</string>
+    <string name="settings_student_id_summary">仅用于区分不同账号的本地缓存，不会上传</string>
+    <string name="settings_reminder_enabled">启用上课提醒</string>
+    <string name="settings_reminder_lead">提前提醒（分钟）</string>
+    <string name="settings_reminder_exact">使用精确提醒</string>
+    <string name="settings_reminder_exact_summary">需要系统授予“闹钟与提醒”权限，未授予时自动降级</string>
+    <string name="settings_notification_permission">通知权限</string>
+    <string name="settings_sis_base_url">教务系统地址</string>
+    <string name="settings_stu_base_url">学生系统地址</string>
+    <string name="settings_reset_defaults">恢复默认地址</string>
+    <string name="settings_diagnostics">开发者诊断</string>
+    <string name="settings_version">版本 %1$s (%2$d)</string>
+    <string name="settings_disclaimer">本应用仅为本机浏览与缓存工具，不保存密码、不自动打卡、不绕过学校认证。所有写操作请使用学校原网页。</string>
+
+    <!-- Common -->
+    <string name="cd_back">返回</string>
+    <string name="cd_close">关闭</string>
+    <string name="common_cancel">取消</string>
+    <string name="common_save">保存</string>
+    <string name="common_confirm">确定</string>
+    <string name="common_retry">重试</string>
+    <string name="common_loading">加载中…</string>
+    <string name="common_error">出错了</string>
+    <string name="common_copy">复制</string>
+    <string name="common_copied">已复制</string>
+
+    <!-- Web container -->
+    <string name="web_blocked">已拦截非校园域名的跳转</string>
+    <string name="web_blocked_hint">该链接指向校园系统之外，已交给系统浏览器处理。</string>
+    <string name="web_ssl_error">证书校验失败，已停止加载</string>
+    <string name="web_ssl_error_hint">出于安全考虑，本应用不会忽略证书错误。</string>
+
+    <!-- Reminder notification -->
+    <string name="notification_channel_reminder">上课提醒</string>
+    <string name="notification_channel_reminder_desc">课程开始前的本地提醒</string>
+    <string name="notification_channel_sync">后台同步</string>
+    <string name="notification_channel_sync_desc">课表后台同步状态</string>
+    <string name="notification_reminder_title">%1$s 即将开始</string>
+    <string name="notification_reminder_body">%1$s · %2$s</string>
+
+    <!-- Diagnostics -->
+    <string name="diag_title">开发者诊断</string>
+    <string name="diag_sis_probe">测试读取本人课表（SIS 原生接口）</string>
+    <string name="diag_sis_webview">测试读取本人课表（WebView 提取）</string>
+    <string name="diag_stu_probe">测试读取打卡状态（STU）</string>
+    <string name="diag_session_probe">探测会话状态</string>
+    <string name="diag_clear_output">清空</string>
+    <string name="diag_export">导出脱敏报告</string>
+    <string name="diag_note">输出已自动脱敏（Cookie / Token / 学号 / 密码）。请勿在截图中包含敏感信息。</string>
+
+    <!-- Language -->
+    <string name="settings_section_language">语言</string>
+    <string name="settings_language">显示语言</string>
+    <string name="settings_language_summary">立即生效，不需要重启</string>
+    <string name="language_system">跟随系统</string>
+    <string name="language_zh">简体中文</string>
+    <string name="language_en">English</string>
+    <string name="reason_session_expired">教务系统登录已过期</string>
+    <string name="reason_never_signed_in">还没有登录教务系统</string>
+    <string name="reason_offline_no_cache">当前离线，且还没有缓存过课表</string>
+    <string name="reason_server_error">教务服务器返回错误 %1$d</string>
+    <string name="reason_schema_changed">课表接口返回的内容无法识别：%1$s</string>
+    <string name="reason_failed">同步失败：%1$s</string>
+    <string name="reason_never_synced">还没有同步过课表</string>
+    <string name="reason_session_hint">教务系统的登录状态大约半小时就会过期，过期后需要重新登录一次。</string>
+    <string name="schedule_sign_in">登录教务系统</string>
+    <string name="schedule_back_home">回到首页刷新</string>
+    <string name="schedule_no_anchor_title">尚未确定学期第一周</string>
+    <string name="schedule_no_anchor_body">课表已缓存，但无法把“第 N 周”换算成具体日期。请在设置中确认学期第一周的星期一。</string>
+    <string name="schedule_go_settings">去设置</string>
+    <string name="cd_previous_week">上一周</string>
+    <string name="cd_next_week">下一周</string>
+    <string name="attendance_remaining">还差 %1$s</string>
+    <string name="attendance_goal_reached">已达标</string>
+    <string name="attendance_no_record_today">还没有今天的记录</string>
+    <string name="attendance_month_total">本月有记录 %1$d 天（合计 %2$s）</string>
+    <string name="attendance_inside">在馆中</string>
+    <string name="attendance_inside_school">在馆 %1$s（学校记录）</string>
+    <string name="attendance_rest_day">休息日</string>
+    <string name="attendance_none">无记录</string>
+    <string name="attendance_discarded_hint">有一次只进了没刷出，已过次日 05:00，本次不计入时长</string>
+    <string name="hero_subtitle">深圳河套学院 · 研究生校园助手</string>
+    <string name="home_attendance_today">今日打卡时长</string>
+    <string name="home_attendance_title">今日考勤</string>
+    <string name="home_syncing_bg">后台同步中…</string>
+    <string name="home_login_syncing">登录完成，正在同步课表…</string>
+    <string name="home_progress">/ %1$s</string>
+    <string name="source_provider">来源：自定义接口</string>
+    <string name="source_webview">来源：网页接口提取</string>
+    <string name="source_dom">来源：页面解析（可能不完整）</string>
+    <string name="source_manual">来源：手动导入</string>
+    <string name="attendance_title">考勤记录</string>
+    <string name="attendance_month_detail">本月明细</string>
+    <string name="attendance_open_page">打开学校考勤页面</string>
+    <string name="attendance_source_note">数据来自学校「学生考勤统计查询」。本应用只读取，不修改任何考勤记录。</string>
+    <string name="attendance_school_stats">本月考勤（学校统计）</string>
+    <string name="attendance_qualified">合格</string>
+    <string name="attendance_unqualified">不合格</string>
+    <string name="attendance_days_progress">已达标 / 应达标</string>
+    <string name="attendance_workdays">工作日</string>
+    <string name="attendance_weekend_budget">周末可用</string>
+    <string name="attendance_days_count">%1$d 天</string>
+    <string name="attendance_times_count">%1$d 次</string>
+    <string name="attendance_school_record">学校记录 %1$s</string>
+    <string name="attendance_no_day_data">本月还没有这一天的数据。可能今天还没刷卡，或本月未同步。</string>
+    <string name="attendance_sessions">共 %1$d 段，累计 %2$s</string>
+    <string name="attendance_first_in">首次进闸</string>
+    <string name="attendance_last_out">最后出闸</string>
+    <string name="attendance_swipe_counts">进出次数</string>
+    <string name="attendance_school_ok">学校判定合格</string>
+    <string name="attendance_school_fail">学校判定未达标</string>
+    <string name="attendance_reading">正在读取考勤记录…</string>
+    <string name="attendance_empty">本月还没有考勤数据</string>
+    <string name="attendance_empty_hint">登录学生系统后点刷新即可获取。也可以直接打开学校原页面查看。</string>
+    <string name="attendance_stu_needs_login">学生系统需要重新登录</string>
+    <string name="attendance_stu_login">学生系统登录</string>
+    <string name="cd_previous_month">上个月</string>
+    <string name="cd_next_month">下个月</string>
+    <string name="home_today_card">今天 · %1$s</string>
+    <string name="hero_logo_cd">深圳河套学院 Shenzhen Loop Area Institute</string>
+    <string name="home_no_swipe_hint">今天还没有刷卡记录，点「刷新」从学生系统读取</string>
+    <string name="home_no_duration">暂无累计时长</string>
+    <string name="settings_anchor_confirmed">已确认：</string>
+    <string name="settings_anchor_estimated">推算：</string>
+    <string name="settings_anchor_unset">未设置（无法把周次换算成日期）</string>
+    <string name="settings_pick_date">选择日期</string>
+    <string name="settings_by_current_week">按当前周次</string>
+    <string name="settings_notif_granted">通知权限已授予</string>
+    <string name="settings_notif_denied">通知权限未授予，提醒不会弹出</string>
+    <string name="settings_lead_current">当前：提前 %1$d 分钟</string>
+    <string name="settings_exact_denied">系统未授予精确闹钟权限，将使用普通提醒</string>
+    <string name="settings_exact_enabled">已启用精确提醒</string>
+    <string name="settings_grant">授权</string>
+    <string name="settings_api_providers">接口配置（API Provider）</string>
+    <string name="settings_which_week">当前是第几周？</string>
+    <string name="settings_which_week_hint">在教务系统课表页可以看到当前周次。填入后本应用会反推出第一周的星期一。</string>
+    <string name="settings_week_number">周次</string>
+    <string name="settings_probe">检测</string>
+    <string name="settings_section_appearance">外观与语言</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_summary">立即生效，不需要重启</string>
+    <string name="theme_system">跟随系统</string>
+    <string name="theme_light">浅色</string>
+    <string name="theme_dark">深色</string>
+</resources>

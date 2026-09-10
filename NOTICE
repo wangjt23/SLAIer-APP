@@ -1,0 +1,33 @@
+SLAIer
+Copyright (c) 2026 SLAIer contributors
+Licensed under the MIT License (see LICENSE).
+
+------------------------------------------------------------------------------------
+Brand assets are NOT covered by the MIT License
+------------------------------------------------------------------------------------
+
+The following files are the property of 深圳河套学院 (Shenzhen Loop Area Institute)
+and are included only so the app can present the institute's own identity:
+
+  theme/slai_logo_black.png                 the SLAI logo
+  theme/slai_campus_pic.jpg                 a photograph of the campus
+  app/src/main/res/drawable-nodpi/*         assets derived from the two files above
+                                            by tools/make-assets.py
+  app/src/main/res/mipmap-anydpi-v26/*      launcher icon
+
+They are NOT licensed to you under the MIT License. If you fork this project, replace
+them with your own artwork, or remove them. `tools/make-assets.py` regenerates every
+derived file from whatever you put in `theme/`.
+
+The colour palette in `app/src/main/java/com/slai/campus/ui/theme/BrandPalette.kt` was
+sampled from the institute's public presentation template for the same reason: it is
+their visual identity, not ours.
+
+------------------------------------------------------------------------------------
+Not affiliated
+------------------------------------------------------------------------------------
+
+This is an unofficial, student-written client. It is not endorsed by, affiliated with,
+or supported by 深圳河套学院 or by 正方软件 / JeeSite. It talks to the school's public
+web endpoints the same way a browser does, using the session the user establishes
+themselves.

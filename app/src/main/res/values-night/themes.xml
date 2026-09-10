@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Compose 自己管深色主题（品牌色里已经有一套深色方案），这里保持空即可。
+  保留文件是为了以后真需要 values-night 限定符时不用再建。
+-->
+<resources />

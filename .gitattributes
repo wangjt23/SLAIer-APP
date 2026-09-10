@@ -1,0 +1,18 @@
+# Normalise line endings so a Windows contributor's checkout does not rewrite every file.
+* text=auto eol=lf
+
+# Gradle wrapper must keep its executable bit on Unix checkouts.
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# Binary assets: never diff, never "fix" the line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.jks binary
+*.keystore binary
+*.apk binary
+*.pptx binary
+
+# Generated / vendored: keep them out of language stats and diffs.
+docs/screenshots/* linguist-documentation

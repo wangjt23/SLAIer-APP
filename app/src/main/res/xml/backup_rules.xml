@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backups are disabled for this app (android:allowBackup="false"). These rules are kept so that the
+  intent is explicit and survives if backups are ever enabled: never migrate WebView cookies,
+  session material or the local database to another device.
+-->
+<full-backup-content>
+    <exclude
+        domain="database"
+        path="." />
+    <exclude
+        domain="sharedpref"
+        path="." />
+    <exclude
+        domain="file"
+        path="datastore" />
+    <exclude
+        domain="file"
+        path="." />
+</full-backup-content>

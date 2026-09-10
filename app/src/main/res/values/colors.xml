@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 官方 logo 的环形标志压在白色底上，缩到 48dp 仍然认得出；主色取模板的 #881E55。 -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <color name="seed">#881E55</color>
+</resources>
