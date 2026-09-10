@@ -119,6 +119,19 @@ certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
 
 ---
 
+## 交流群
+
+安装、使用、报 bug、催更，都可以进群说：
+
+<p align="center">
+  <img src="docs/screenshots/wechat_group.jpg" width="360" alt="SLAIer APP 用户群 · 微信群二维码">
+</p>
+
+> 微信群的二维码**有效期只有 7 天**（微信的限制，不是这里写错了）。
+> 如果上面的码过期了，直接提 [Issue](../../issues) 说一声，我会换新的。
+
+---
+
 ## 4. 这个 App 是怎么连上学校系统的
 
 不猜、不绕、不代填：
