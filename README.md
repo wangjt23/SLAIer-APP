@@ -26,6 +26,7 @@
   （之前那张 540px 的比另外两张 1080px 的明显小一圈）。写死宽度后三列一定等宽。
   图片本身也统一成了 540x1170，在 250px 显示宽度下约等于 2x，足够清晰。
 -->
+
 | 首页 | 课表 | 考勤 |
 |:--:|:--:|:--:|
 | <img src="docs/screenshots/realuse01.jpg" width="250" alt="首页：今日课程与打卡时长"> | <img src="docs/screenshots/realuse02.jpg" width="250" alt="课表：本周课程与上下课时间"> | <img src="docs/screenshots/realuse03.jpg" width="250" alt="考勤：当日累计时长与本月明细"> |
@@ -121,13 +122,13 @@ certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
 
 ## 交流群
 
-安装、使用、报 bug、催更，都可以进群说：
+安装、使用、报 bug、催更，欢迎进群交流：
 
 <p align="center">
   <img src="docs/screenshots/wechat_group.jpg" width="360" alt="SLAIer APP 用户群 · 微信群二维码">
 </p>
 
-> 微信群的二维码**有效期只有 7 天**（微信的限制，不是这里写错了）。
+> 微信群的二维码**有效期只有 7 天**（微信的限制）。
 > 如果上面的码过期了，直接提 [Issue](../../issues) 说一声，我会换新的。
 
 ---
