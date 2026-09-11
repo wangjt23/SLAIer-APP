@@ -17,6 +17,9 @@
     -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
+    <!-- 应用内更新：把下载好的 APK 交给系统安装器（用户仍需在系统里允许"安装未知应用"）。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- No feature is mandatory: the app is a browser + cache client. -->
     <uses-feature
         android:name="android.hardware.touchscreen"
@@ -82,6 +85,14 @@
                 android:value="androidx.startup"
                 tools:node="remove" />
         </provider>
+        <!-- PackageInstaller 的安装结果回调（显式 PendingIntent，不导出）。 -->
+        <receiver
+            android:name=".data.update.UpdateInstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.slai.campus.action.INSTALL_STATUS" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

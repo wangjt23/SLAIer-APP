@@ -13,6 +13,7 @@ import com.slai.campus.core.network.SisApiClient
 import com.slai.campus.core.network.SisWebClient
 import com.slai.campus.core.network.StuApiClient
 import com.slai.campus.core.network.StuWebClient
+import com.slai.campus.core.network.UpdateClient
 import com.slai.campus.core.network.WebViewCookieInterceptor
 import com.slai.campus.core.session.SessionProbe
 import com.slai.campus.data.attendance.AttendanceRepositoryImpl
@@ -65,6 +66,22 @@ object AppModule {
      * The one clock the app reads. Injecting it (instead of calling LocalDate.now() inline) keeps
      * "today's classes", week numbers and reminder scheduling testable.
      */
+    /**
+     * 独立于学校系统的一套超时与重定向策略：下载 APK 是几 MB 的流式读取，而且 GitHub 的
+     * release 资产会 302 到 objects.githubusercontent.com，必须跟随重定向。
+     */
+    @Provides
+    @Singleton
+    @UpdateClient
+    fun provideUpdateClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(180, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
+        .build()
+
     @Provides
     @Singleton
     fun provideClock(): java.time.Clock = java.time.Clock.system(java.time.ZoneId.systemDefault())
@@ -157,6 +174,11 @@ abstract class BindingsModule {
     @Binds
     @Singleton
     abstract fun bindAttendanceRepository(impl: AttendanceRepositoryImpl): AttendanceRepository
+
+    /** 应用内更新：GitHub Releases 检查 + 下载校验 + PackageInstaller 安装。 */
+    @Binds
+    @Singleton
+    abstract fun bindUpdateRepository(impl: com.slai.campus.data.update.UpdateRepositoryImpl): com.slai.campus.domain.update.UpdateRepository
 
     /** Both session probes are contributed into one set consumed by `SessionManager`. */
     @Binds

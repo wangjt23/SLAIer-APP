@@ -41,6 +41,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -50,6 +52,9 @@ import com.slai.campus.R
 import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.core.session.SessionSnapshot
 import com.slai.campus.core.web.SisEndpoints
+import com.slai.campus.domain.update.UpdateState
+import com.slai.campus.domain.update.ReleaseNotes
+import com.slai.campus.domain.update.UpdateFailure
 import com.slai.campus.navigation.AppNavigator
 import java.time.Instant
 import java.time.LocalDate
@@ -68,9 +73,14 @@ import java.time.format.DateTimeFormatter
 fun SettingsScreen(
     navigator: AppNavigator,
     session: SessionSnapshot,
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: SettingsViewModel = hiltViewModel(),
+    updateViewModel: UpdateViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val updateState by updateViewModel.state.collectAsStateWithLifecycle()
+
+    // 用户可能刚从系统的「安装未知应用」页面返回，回到前台时重新读一次授权状态。
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { updateViewModel.refreshInstallPermission() }
     // 点击回调不是 @Composable，字符串要在外面取好。
     val sisLoginLabel = stringResource(R.string.schedule_sign_in)
     val stuLoginLabel = stringResource(R.string.attendance_stu_login)
@@ -317,6 +327,8 @@ fun SettingsScreen(
                 text = stringResource(R.string.settings_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
                 style = MaterialTheme.typography.bodyMedium
             )
+
+            UpdateSection(state = updateState, viewModel = updateViewModel)
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 modifier = Modifier.fillMaxWidth()
@@ -495,4 +507,148 @@ private fun <T> SegmentedRow(
             }
         }
     }
+}
+
+/**
+ * 「关于」里的更新区块。
+ *
+ * 它必须把状态机讲清楚 —— 用户在这里最怕的是"点了没反应"：检查中说"正在检查"、
+ * 校验中说"正在校验"、需要授权时直接给按钮送去系统页面、失败时给的是**可照做的一句话**
+ * （限流 → 稍后再试；连不上 → 换个网络；签名不符 → 说明这个包不是官方的）。
+ */
+@Composable
+private fun UpdateSection(state: UpdateUiState, viewModel: UpdateViewModel) {
+    val failed = state.state as? UpdateState.Failed
+    val available = state.state as? UpdateState.Available
+    val downloading = state.state as? UpdateState.Downloading
+
+    SettingRow(
+        title = stringResource(R.string.settings_auto_update_check),
+        summary = stringResource(R.string.settings_auto_update_check_summary)
+    ) {
+        Switch(checked = state.autoCheck, onCheckedChange = viewModel::setAutoCheck)
+    }
+
+    if (available != null) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = stringResource(R.string.update_available_title, available.release.versionName),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                available.release.sizeText?.let {
+                    Text(
+                        text = stringResource(R.string.update_available_size, it),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                ReleaseNotes.plainText(available.release.notes)?.let { notes ->
+                    Text(text = notes, style = MaterialTheme.typography.bodySmall)
+                }
+                if (!state.canInstall) {
+                    Text(
+                        text = stringResource(R.string.update_needs_permission),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = viewModel::downloadAndInstall) {
+                        Text(stringResource(R.string.update_download_install))
+                    }
+                    TextButton(onClick = viewModel::ignoreVersion) {
+                        Text(stringResource(R.string.update_ignore_version))
+                    }
+                }
+                TextButton(onClick = viewModel::openReleasePage) {
+                    Text(stringResource(R.string.update_open_release_page))
+                }
+            }
+        }
+    }
+
+    if (downloading != null) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = stringResource(R.string.update_downloading, downloading.percent),
+                style = MaterialTheme.typography.bodySmall
+            )
+            androidx.compose.material3.LinearProgressIndicator(
+                progress = { downloading.percent / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+
+    if (failed != null) {
+        Text(
+            text = updateFailureText(failed),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+
+    SettingRow(
+        title = stringResource(R.string.update_check_now),
+        summary = updateStatusText(state)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = viewModel::check,
+                enabled = state.state !is UpdateState.Checking &&
+                    state.state !is UpdateState.Downloading &&
+                    state.state !is UpdateState.Installing
+            ) { Text(stringResource(R.string.update_check_button)) }
+            if (failed != null && failed.reason == UpdateFailure.NEEDS_PERMISSION) {
+                OutlinedButton(onClick = viewModel::openUnknownSourcesSettings) {
+                    Text(stringResource(R.string.update_grant_install))
+                }
+            }
+        }
+    }
+}
+
+/** 一行状态：什么时候查的、结果是什么。 */
+@Composable
+private fun updateStatusText(state: UpdateUiState): String {
+    val checkedAt = state.lastCheckedAt?.let {
+        java.time.Instant.ofEpochMilli(it)
+            .atZone(java.time.ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+    }
+    return when (state.state) {
+        is UpdateState.Checking -> stringResource(R.string.update_checking)
+        is UpdateState.Downloading -> ""
+        is UpdateState.Verifying -> stringResource(R.string.update_verifying)
+        is UpdateState.Installing -> stringResource(R.string.update_installing)
+        is UpdateState.ReadyToInstall -> stringResource(R.string.update_ready)
+        is UpdateState.Installed -> stringResource(R.string.update_installed)
+        is UpdateState.Available -> stringResource(R.string.update_available_short)
+        is UpdateState.UpToDate -> checkedAt?.let { stringResource(R.string.update_up_to_date, it) }
+            ?: stringResource(R.string.update_up_to_date_never)
+        is UpdateState.Idle -> checkedAt?.let { stringResource(R.string.update_last_checked, it) }
+            ?: stringResource(R.string.update_never_checked)
+        is UpdateState.Failed -> checkedAt?.let { stringResource(R.string.update_last_checked, it) }
+            ?: stringResource(R.string.update_never_checked)
+    }
+}
+
+/** 失败 → 一句用户能照做的话。 */
+@Composable
+private fun updateFailureText(failed: UpdateState.Failed): String = when (failed.reason) {
+    UpdateFailure.RATE_LIMITED -> stringResource(R.string.update_failed_rate_limited)
+    UpdateFailure.UNREACHABLE -> stringResource(R.string.update_failed_unreachable)
+    UpdateFailure.NO_APK -> stringResource(R.string.update_failed_no_apk)
+    UpdateFailure.CHECKSUM_MISMATCH -> stringResource(R.string.update_failed_checksum)
+    UpdateFailure.SIGNATURE_MISMATCH -> stringResource(R.string.update_failed_signature)
+    UpdateFailure.NOT_NEWER -> stringResource(R.string.update_failed_not_newer)
+    UpdateFailure.DOWNLOAD_FAILED -> stringResource(R.string.update_failed_download, failed.detail.orEmpty())
+    UpdateFailure.NEEDS_PERMISSION -> stringResource(R.string.update_needs_permission)
+    UpdateFailure.INSTALL_FAILED -> stringResource(R.string.update_failed_install, failed.detail.orEmpty())
+    UpdateFailure.CANCELLED -> stringResource(R.string.update_cancelled)
+    UpdateFailure.UNKNOWN -> stringResource(R.string.update_failed_unknown, failed.detail.orEmpty())
 }

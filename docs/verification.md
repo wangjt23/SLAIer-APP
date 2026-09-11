@@ -1565,3 +1565,77 @@ adb logcat: W SlaiCampus: attendance transport failure: UnknownHostException
 这一轮**不需要账号**：失败分类来自 App 自身的异常归类（`UnknownHostException` / timeout），
 提示文案也不依赖官网细节。如果以后要确认"延迟到底几分钟""校外到底是不是 DNS 层失败"，
 再用浏览器自动化 + 你的账号会更靠谱 —— 届时最有用的是**诊断页的输出**（它会打印每一步的真实错误）。
+
+---
+
+## 24. 第二十轮：应用内更新（检查 → 下载 → 校验 → 安装）（2026-09-11）
+
+用户选定：**只用 GitHub API `releases/latest`**、**启动 + 每天一次自动检查（默认开、可关）**、
+**支持「忽略此版本」**，并在 README 里加一节「如何更新」。
+
+### 24.1 链路与分工
+
+| 环节 | 实现 | 说明 |
+|---|---|---|
+| 版本发现 | `GitHubReleaseDataSource` | `releases/latest` + `If-None-Match`(ETag) + `User-Agent`；**403 单独识别为限流** |
+| 解析 | `ReleaseParser`（纯函数） | 手动遍历 `JsonElement`，不建 `@Serializable` 模型；未知字段不影响；**没有 APK 资产也能解析**（交给上层判"这次发布没法装"） |
+| 是否提示 | `AppVersion` / `ReleaseDecision`（纯函数） | 版本号按数字段比较（`1.10.0 > 1.9.0`）；解析不出来一律**不提示**（宁可漏报，不要骗用户装旧包）；已忽略版本只有在出现更高版本时才重新提示 |
+| 下载 | `ApkDownloader` | 流式写 `cacheDir/update`，**边下边算 SHA-256** |
+| 校验 | `ApkVerifier` | ① SHA-256 对 `SHA256SUMS.txt` ② 包内 versionCode > 当前 ③ **签名与本机一致** |
+| 安装 | `ApkInstaller` + `UpdateInstallReceiver` | `PackageInstaller.Session` + `commit(IntentSender)`；处理 `STATUS_PENDING_USER_ACTION`（部分 ROM 需要 App 自己拉起确认页） |
+
+配套：`@UpdateClient`（**不挂学校 cookie 拦截器**、超时放宽到 180s、跟随重定向）、
+`UpdateCheckWorker`（24h 周期，失败不重试）、`SessionStore` 四个偏好（开关 / 忽略版本 / 上次检查 / ETag）、
+`MainViewModel` 启动时 `checkIfStale()`。
+
+UI：设置 → 关于 → 「自动检查更新」开关 + 「检查更新」+ 有新版时的卡片（版本号 / 体积 / 说明 / 下载并安装 / 忽略此版本 / 打开下载页）。
+
+### 24.2 端到端实测（真机流程，不是打桩）
+
+模拟器上装一个**临时把版本号改回 1.0.0（versionCode 1）但已含更新功能**的包，
+让它去发现线上**真实发布**的 v1.0.2：
+
+```text
+I SlaiCampus: update check: latest=1.0.2
+（UI）Version 1.0.2 is available / Package 2.6 MB
+（未授权）点「下载并安装」→ 跳到系统 Install unknown apps 页面 → 打开开关
+I SlaiCampus: update apk downloaded: slaier-1.0.2.apk (2708503 bytes)
+I SlaiCampus: update install session committed: ***
+I SlaiCampus: install status=-1            ← STATUS_PENDING_USER_ACTION
+（系统弹窗）Do you want to update this app? → Update
+$ adb shell dumpsys package com.slai.campus | grep version
+    versionCode=3  versionName=1.0.2        ← 真的把自己更新上去了
+```
+
+### 24.3 实测中发现并修掉的两个问题
+
+| 现象 | 原因 | 修法 |
+|---|---|---|
+| 静默检查失败后界面**永远停在「正在检查」**，连手动检查按钮都被禁用 | 自动检查失败时没有回退状态 | 失败时恢复到检查前的状态（`previous`） |
+| 从系统「安装未知应用」页面授权后返回，卡片上的"需要授权"提示还在 | 授权状态由系统持有，`combine` 不会自己重算 | `LifecycleEventEffect(ON_RESUME)` 重新读一次 `canRequestPackageInstalls()` |
+
+另外单测抓到 `ReleaseNotes.plainText` 的一个真 bug：`removePrefix("#")` 只去掉一个 `#`，
+`### 提示` 会渲染成 `## 提示` —— 改成整段前缀的正则。
+
+### 24.4 验证清单
+
+| # | 验证项 | 结果 |
+|---|---|---|
+| 149 | 版本比较：数字段（1.10.0 > 1.9.0）、缺段补零、debug 后缀、无法解析一律不提示 | ✅ 单测 5 项 |
+| 150 | 决策：已忽略版本不再提示、更高版本重新提示、无 APK 不提示 | ✅ 单测 4 项 |
+| 151 | `SHA256SUMS.txt` 解析：GNU 双空格、`*` 二进制标记、路径、大小写、多行取对 | ✅ 单测 4 项 |
+| 152 | GitHub payload 解析：真实结构、多余字段、只发源码、垃圾输入 | ✅ 单测 4 项 |
+| 153 | 更新说明纯文本化：去标题/强调/列表符号、链接、分隔线、截断、空值 | ✅ 单测 4 项 |
+| 154 | 限流(403) 有专门的用户提示，不是笼统"失败" | ✅ 模拟器截图 |
+| 155 | 静默检查失败后 UI 回到可操作状态 | ✅ 模拟器截图 |
+| 156 | 未授权时把人送到系统授权页 | ✅ 模拟器（`com.android.settings/.spa.SpaActivity`） |
+| 157 | 下载 → SHA/版本/签名校验 → 系统确认 → **覆盖安装成功** | ✅ 端到端（1.0.0 → 1.0.2） |
+| 158 | 单元测试总数 | ✅ **202 通过 / 0 失败**（新增 21 项） |
+
+### 24.5 已知边界
+
+- **首次安装仍然要用户手动点系统确认**（Android 不允许普通应用静默安装），自动化的边界就在这里。
+- GitHub 未认证 API 是 **60 次/小时/IP**：校园网出口 NAT 下全班共用一个 IP，撞限流很正常 ——
+  所以默认一天只查一次，限流时安静等待。
+- 下载源只有 GitHub：国内直连可能慢/断，此时引导用户点「打开下载页」用浏览器下载（现有兜底）。
+- **更新功能只对"已经装有该功能"的版本生效**：v1.1.0（已 tag）不含它，用户装到含此功能的版本之后才自动。

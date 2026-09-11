@@ -39,6 +39,7 @@ class MainViewModel @Inject constructor(
     private val scheduleRepository: ScheduleRepository,
     private val urlProvider: AppUrlProvider,
     private val captureBus: CaptureBus,
+    private val updateRepository: com.slai.campus.domain.update.UpdateRepository,
     private val cookieBridge: com.slai.campus.core.session.WebCookieBridge,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -78,6 +79,12 @@ class MainViewModel @Inject constructor(
             // "需要重新登录" banner without ever opening a login UI by itself.
             runCatching { sessionManager.probeAll() }
                 .onFailure { AppLog.w("startup probe failed: ${it.javaClass.simpleName}") }
+        }
+        viewModelScope.launch {
+            // 应用内更新：注册每日检查，并在启动时做一次"超过一天没查过才真查"的静默检查。
+            com.slai.campus.worker.UpdateCheckWorker.enqueuePeriodic(appContext)
+            runCatching { updateRepository.checkIfStale() }
+                .onFailure { AppLog.w("update check failed: ${it.javaClass.simpleName}") }
         }
     }
 

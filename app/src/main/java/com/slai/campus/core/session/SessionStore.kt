@@ -71,6 +71,18 @@ class SessionStore @Inject constructor(
          */
         val SHOW_TIMETABLE_ON_HOME = booleanPreferencesKey("show_timetable_on_home")
 
+        /** 自动检查更新（默认开）；关掉后只有手动点「检查更新」才会请求 GitHub。 */
+        val UPDATE_CHECK_ENABLED = booleanPreferencesKey("update_check_enabled")
+
+        /** 用户点了「忽略此版本」的那个版本号，出现更高版本时会重新提示。 */
+        val UPDATE_IGNORED_VERSION = stringPreferencesKey("update_ignored_version")
+
+        /** 上次检查更新的时间戳；静默检查按它判断"是不是已经超过一天"。 */
+        val UPDATE_LAST_CHECK_AT = longPreferencesKey("update_last_check_at")
+
+        /** GitHub API 的 ETag，命中 304 时不用重新解析整个 payload。 */
+        val UPDATE_ETAG = stringPreferencesKey("update_etag")
+
         /** Occurrence ids that currently have a scheduled alarm, so stale ones can be cancelled. */
         val SCHEDULED_REMINDERS = androidx.datastore.preferences.core.stringSetPreferencesKey("scheduled_reminders")
     }
@@ -201,6 +213,42 @@ class SessionStore @Inject constructor(
     /** (sisBase, stuBase), either of which may be null when the user has not overridden it. */
     val baseUrls: Flow<Pair<String?, String?>> = context.sessionDataStore.data.map { prefs ->
         prefs[Keys.SIS_BASE_URL] to prefs[Keys.STU_BASE_URL]
+    }
+
+    // ---- 应用内更新 ---------------------------------------------------------------------
+
+    /** 自动检查更新。默认开 —— 关掉是用户的显式选择，所以没有值时不能猜成 false。 */
+    val updateCheckEnabled: Flow<Boolean> = context.sessionDataStore.data.map { prefs ->
+        prefs[Keys.UPDATE_CHECK_ENABLED] ?: true
+    }
+
+    suspend fun updateCheckEnabledNow(): Boolean = updateCheckEnabled.first()
+
+    suspend fun setUpdateCheckEnabled(enabled: Boolean) {
+        context.sessionDataStore.edit { it[Keys.UPDATE_CHECK_ENABLED] = enabled }
+    }
+
+    /** 被「忽略此版本」跳过的版本号。 */
+    suspend fun updateIgnoredVersion(): String? =
+        context.sessionDataStore.data.first()[Keys.UPDATE_IGNORED_VERSION]
+
+    suspend fun setUpdateIgnoredVersion(version: String?) {
+        context.sessionDataStore.edit { prefs ->
+            if (version.isNullOrBlank()) prefs.remove(Keys.UPDATE_IGNORED_VERSION)
+            else prefs[Keys.UPDATE_IGNORED_VERSION] = version
+        }
+    }
+
+    suspend fun updateLastCheckAt(): Long? = context.sessionDataStore.data.first()[Keys.UPDATE_LAST_CHECK_AT]
+
+    suspend fun setUpdateLastCheckAt(at: Long) {
+        context.sessionDataStore.edit { it[Keys.UPDATE_LAST_CHECK_AT] = at }
+    }
+
+    suspend fun updateEtag(): String? = context.sessionDataStore.data.first()[Keys.UPDATE_ETAG]
+
+    suspend fun setUpdateEtag(etag: String) {
+        context.sessionDataStore.edit { it[Keys.UPDATE_ETAG] = etag }
     }
 
     /**
