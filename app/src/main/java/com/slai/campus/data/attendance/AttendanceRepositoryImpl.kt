@@ -24,6 +24,7 @@ import com.slai.campus.domain.attendance.AttendancePunch
 import com.slai.campus.domain.attendance.PunchDirection
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
+import com.slai.campus.domain.attendance.networkFailureResult
 import com.slai.campus.domain.attendance.AttendanceRepository
 import com.slai.campus.domain.attendance.AttendanceSyncState
 import com.slai.campus.data.stu.StuAttendanceParser
@@ -275,7 +276,12 @@ class AttendanceRepositoryImpl @Inject constructor(
 
                 is RemoteResult.NetworkUnavailable -> {
                     recordAttempt(accountHash, month, attemptedAt, result.reason)
-                    AttendanceRefreshResult.Offline(cached = hasCache(accountHash, month))
+                    // 设备有网 = 是"连不上学校"（很可能是离开了校园网），不是"离线"。
+                    networkFailureResult(
+                        hasNetwork = networkMonitor.hasNetwork,
+                        hasCache = hasCache(accountHash, month),
+                        reason = result.reason
+                    )
                 }
 
                 is RemoteResult.SchemaChanged -> {

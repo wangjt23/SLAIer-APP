@@ -41,8 +41,8 @@ android {
          *   versionCode 必须递增，否则 Android 会拒绝覆盖安装（"应用未安装"）；
          *   versionName 只影响显示，但要和 git tag 保持一致，方便对上号。
          */
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

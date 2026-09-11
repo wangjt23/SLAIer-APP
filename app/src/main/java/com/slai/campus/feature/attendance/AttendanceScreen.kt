@@ -12,11 +12,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -44,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.slai.campus.R
 import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.domain.attendance.AttendanceRecord
+import com.slai.campus.domain.attendance.AttendanceWeek
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
 import com.slai.campus.domain.attendance.DailyAttendance
 import com.slai.campus.ui.currentLocale
@@ -106,6 +109,14 @@ fun AttendanceScreen(
 
             item { TodayCard(state) }
 
+            // 常驻提示：闸机记录不是实时的。"刚出闸却还显示在馆中"就来自这个延迟。
+            item { DelayNote() }
+
+            // 连不上学校时（多半是人已离开校园网），把"回校园网再刷"说清楚。
+            if (state.lastResult?.needsCampusNetworkHint == true) {
+                item { UnreachableCard() }
+            }
+
             if (state.monthData.summary.hasAnything) {
                 item { MonthSummaryCard(state) }
             }
@@ -132,16 +143,43 @@ fun AttendanceScreen(
                     )
                 }
 
-                else -> items(state.days, key = { it.date.toEpochDay() }) { record ->
-                    DayCard(
-                        record = record,
-                        isToday = record.date == state.todayDate,
-                        punchDay = state.punchDay(record.date),
-                        punchMinutes = state.punchMinutes(record.date),
-                        discarded = state.hasDiscarded(record.date),
-                        now = state.nowDateTime,
-                        formatter = dayFormatter
-                    )
+                else -> {
+                    /*
+                     * 明细按**学校自己的周分组**渲染：学院的口径是"一周任意 5 天即可"，
+                     * 所以周标题上直接给「计入 N/5 天」，超出的合格日在行内灰显说明。
+                     */
+                    val weeks = state.monthData.weeks
+                    if (weeks.isEmpty()) {
+                        // 兜底：学校没给周分组时退回平铺，至少不丢数据。
+                        items(state.days, key = { it.date.toEpochDay() }) { record ->
+                            DayCard(
+                                record = record,
+                                isToday = record.date == state.todayDate,
+                                punchDay = state.punchDay(record.date),
+                                punchMinutes = state.punchMinutes(record.date),
+                                discarded = state.hasDiscarded(record.date),
+                                notCounted = false,
+                                now = state.nowDateTime,
+                                formatter = dayFormatter
+                            )
+                        }
+                    } else {
+                        weeks.forEach { week ->
+                            item(key = "week-${week.range}") { WeekHeader(week, dayFormatter) }
+                            items(week.records, key = { it.date.toEpochDay() }) { record ->
+                                DayCard(
+                                    record = record,
+                                    isToday = record.date == state.todayDate,
+                                    punchDay = state.punchDay(record.date),
+                                    punchMinutes = state.punchMinutes(record.date),
+                                    discarded = state.hasDiscarded(record.date),
+                                    notCounted = state.isNotCounted(record.date),
+                                    now = state.nowDateTime,
+                                    formatter = dayFormatter
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -209,9 +247,34 @@ private fun MonthSummaryCard(state: AttendanceUiState) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                summary.progressText?.let { StatCell(stringResource(R.string.attendance_days_progress), it) }
-                summary.totalWorkdays?.let { StatCell(stringResource(R.string.attendance_workdays), "$it 天") }
-                summary.maxAllowedRestdayPunches?.let { StatCell(stringResource(R.string.attendance_weekend_budget), "$it 次") }
+                /*
+                 * 两格，数字全部来自学校，措辞与学院网站一致：
+                 *   ① 有效打卡 / 应达标 = 网站的「有效打卡 N 天」 + 学校给出的应达标天数；
+                 *   ② 剩余补打卡机会 = 网站的同名数字（漏卡后的补录额度）。
+                 * 特意**不显示** `actualWorkdayPunches`（只数工作日，比网站少）——
+                 * 那个数字会让用户以为 App 算错了。
+                 */
+                summary.effectiveDays?.let { effective ->
+                    val required = summary.requiredDays
+                    StatCell(
+                        label = if (required != null) {
+                            stringResource(R.string.attendance_effective_progress)
+                        } else {
+                            stringResource(R.string.attendance_effective_days)
+                        },
+                        value = if (required != null) {
+                            stringResource(R.string.attendance_days_value, effective, required)
+                        } else {
+                            stringResource(R.string.attendance_days_value_short, effective)
+                        }
+                    )
+                }
+                summary.maxAllowedRestdayPunches?.let { left ->
+                    StatCell(
+                        label = stringResource(R.string.attendance_restday_left),
+                        value = stringResource(R.string.attendance_days_value_short, left)
+                    )
+                }
             }
 
             val swiped = state.days.count { it.hasSwipes }
@@ -223,6 +286,50 @@ private fun MonthSummaryCard(state: AttendanceUiState) {
                 )
             }
         }
+    }
+}
+
+/**
+ * 一周的分组标题。
+ *
+ * 右侧的「计入 N/5 天」是**对学校判定做的折算**：学院口径是一周任意 5 天，
+ * 所以一周最多计 5 天（不足 5 天就按实际合格天数）。判定本身仍然全部来自学校。
+ */
+@Composable
+private fun WeekHeader(week: AttendanceWeek, formatter: DateTimeFormatter) {
+    val full = week.countedCount >= AttendanceWeek.COUNTED_DAYS_PER_WEEK
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val start = week.start
+        val end = week.end
+        Column {
+            /*
+             * 标题直接用**本地化的日期范围**，不用 week.shortLabel：
+             * 那个 label 是数据层自己拼的中文（"9月7日起"）—— 缓存里只有每日行，学校给的
+             * 「第N周 (…)」并没有被持久化，所以英文界面下它会漏出中文，而且和下面的范围重复。
+             */
+            Text(
+                text = if (start != null && end != null) {
+                    "${start.format(formatter)} – ${end.format(formatter)}"
+                } else {
+                    week.shortLabel
+                },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Text(
+            text = stringResource(
+                R.string.attendance_week_counted,
+                week.countedCount,
+                AttendanceWeek.COUNTED_DAYS_PER_WEEK
+            ),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (full) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -392,7 +499,7 @@ private fun TodayCard(state: AttendanceUiState) {
                     }
                 }
 
-                val chips = chips(today)
+                val chips = chips(today, state.isNotCounted(today.date))
                 if (chips.isNotEmpty()) {
                     Text(
                         text = chips.joinToString(" · "),
@@ -412,11 +519,20 @@ private fun TodayCard(state: AttendanceUiState) {
  * values and are shown as-is. Only the verdict we render ourselves (`qualified`) is localised.
  */
 @Composable
-private fun chips(record: AttendanceRecord): List<String> = buildList {
+private fun chips(record: AttendanceRecord, notCounted: Boolean = false): List<String> = buildList {
     record.dayType?.let { add(it) }
     record.isHoliday?.let { if (it != "非节假日") add(it) }
     if (record.leave == true) add("请假")
-    record.qualified?.let { add(if (it) stringResource(R.string.attendance_school_ok) else stringResource(R.string.attendance_school_fail)) }
+    record.qualified?.let {
+        add(
+            when {
+                !it -> stringResource(R.string.attendance_school_fail)
+                // 学院口径：一周任意 5 天即可，超出的合格日不累加，必须说明白。
+                notCounted -> stringResource(R.string.attendance_school_ok_not_counted)
+                else -> stringResource(R.string.attendance_school_ok)
+            }
+        )
+    }
 }
 
 @Composable
@@ -451,6 +567,8 @@ private fun DayCard(
     punchDay: DailyAttendance?,
     punchMinutes: Int?,
     discarded: Boolean,
+    /** 学校判定合格，但本周已满 5 天，不再计入打卡天数。 */
+    notCounted: Boolean,
     now: java.time.LocalDateTime,
     formatter: DateTimeFormatter
 ) {
@@ -479,7 +597,7 @@ private fun DayCard(
             }
 
             val details = buildList {
-                addAll(chips(record))
+                addAll(chips(record, notCounted))
                 // 进出时间：优先用闸机流水；没有流水时才退回学校给出的范围。
                 when {
                     punchDay != null -> {
@@ -591,12 +709,72 @@ private fun NeedsLoginCard(navigator: AppNavigator, state: AttendanceUiState) {
     }
 }
 
+/**
+ * 学校闸机记录有 5–10 分钟延迟。
+ *
+ * 必须写在页面上：用户刷脸出闸后马上打开 App，看到的还是"在馆中"并在继续计时，
+ * 不说清楚就会以为 App 算错了（实际是学校那边还没落这条记录）。
+ */
+@Composable
+private fun DelayNote() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            Icons.Default.Schedule,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = stringResource(R.string.attendance_delay_note),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * 有网但连不上学生系统时的提示。
+ *
+ * 典型场景：刷脸出闸 → 走出校园网 → 学生系统在校外不可达，于是"在馆中"一直挂着、
+ * 时间一直涨。这时该说的不是"你离线了"，而是"回校园网再刷新"。
+ */
+@Composable
+private fun UnreachableCard() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    Icons.Default.CloudOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = stringResource(R.string.attendance_unreachable_title),
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+            Text(
+                text = stringResource(R.string.attendance_unreachable_body),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
 @Composable
 private fun ResultRow(result: AttendanceRefreshResult?, refreshing: Boolean) {
     val text = when {
         refreshing -> "正在同步…"
         result is AttendanceRefreshResult.Success -> "已同步：${result.days} 天"
         result is AttendanceRefreshResult.Offline -> "离线，显示缓存"
+        result is AttendanceRefreshResult.Unreachable -> "连不上学生系统（可能是校外网络）"
         result is AttendanceRefreshResult.SessionExpired -> "需要重新登录"
         result is AttendanceRefreshResult.SchemaChanged -> "接口结构可能已变化"
         result is AttendanceRefreshResult.ServerError -> "服务器错误 ${result.code}"

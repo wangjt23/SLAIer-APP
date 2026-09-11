@@ -113,7 +113,19 @@ data class AttendanceUiState(
 
     val hasData: Boolean get() = days.isNotEmpty()
 
-    val qualifiedCount: Int get() = days.count { it.qualified == true }
+    /**
+     * 这一天是不是"学校判定合格、但本周已满 5 天所以不计入"。
+     *
+     * 周分组直接用学校给的 `weeks[].range`（周一~周日），不再自己划周。
+     * 原来的 `qualifiedCount`（整月不封顶地数合格天数）已删除：那正是会和学院口径对不上的算法。
+     */
+    fun isNotCounted(date: LocalDate): Boolean = monthData.weeks.any { week ->
+        val start = week.start
+        val end = week.end
+        start != null && end != null &&
+            !date.isBefore(start) && !date.isAfter(end) &&
+            date in week.overflowDates
+    }
 }
 
 /**

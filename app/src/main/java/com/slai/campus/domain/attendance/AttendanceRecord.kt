@@ -143,6 +143,50 @@ data class AttendanceWeek(
 
     /** Short label, e.g. `第2周`. */
     val shortLabel: String get() = label.substringBefore(' ').ifBlank { label }
+
+    /**
+     * 本周「学校判定合格」的日期，按日期先后排列。
+     *
+     * 合格与否完全来自学校的 `isQual`，这里只做排序 —— App 不推断任何一天是否合格。
+     */
+    private val qualifiedDatesInOrder: List<LocalDate>
+        get() = records.asSequence()
+            .filter { it.qualified == true }
+            .map { it.date }
+            .sorted()
+            .toList()
+
+    /** 本周学校判定合格的天数（可能超过 [COUNTED_DAYS_PER_WEEK]）。 */
+    val qualifiedCount: Int get() = qualifiedDatesInOrder.size
+
+    /**
+     * 计入打卡的天数。
+     *
+     * 学院口径是**一周 7 天里任意 5 天**，不是"必须工作日"：工作日缺的那天可以用周末补。
+     * 所以一周最多只计 [COUNTED_DAYS_PER_WEEK] 天，多出来的合格日不再累加。
+     */
+    val countedCount: Int get() = minOf(qualifiedCount, COUNTED_DAYS_PER_WEEK)
+
+    /** 计入打卡的日期：按日期先后取前 [COUNTED_DAYS_PER_WEEK] 个合格日。 */
+    val countedDates: Set<LocalDate> get() = qualifiedDatesInOrder.take(COUNTED_DAYS_PER_WEEK).toSet()
+
+    /**
+     * 学校判定合格、但本周已满 5 天所以不计入的日期。
+     *
+     * 明细里必须说清楚，否则用户会问"学校都说合格了，为什么天数对不上"。
+     */
+    val overflowDates: Set<LocalDate> get() = qualifiedDatesInOrder.drop(COUNTED_DAYS_PER_WEEK).toSet()
+
+    companion object {
+        /**
+         * 一周最多计入的打卡天数。
+         *
+         * 实测支持这个口径：抓到的 2026-09 `stats` 是 `totalWorkdays=20`、`requiredPunches=20`，
+         * 而该月有 22 个工作日 —— 20 恰好是 4 周 × 5 天，而不是"每个工作日一天"。
+         * 学校另用 `maxAllowedRestdayPunches=3` 记周末补卡额度。
+         */
+        const val COUNTED_DAYS_PER_WEEK = 5
+    }
 }
 
 /**
@@ -167,13 +211,26 @@ data class AttendanceStats(
     val hasAnything: Boolean
         get() = totalWorkdays != null || actualWorkdayPunches != null || monthlyQualified != null
 
-    /** 已达标天数 / 应达标天数。 */
-    val progressText: String?
-        get() {
-            val actual = actualWorkdayPunches ?: return null
-            val required = requiredPunches ?: totalWorkdays ?: return null
-            return "$actual / $required 天"
-        }
+    /**
+     * 本月**应达标天数**（学校口径）。
+     *
+     * 只用来和 [effectiveDays] 配成「7 / 20 天」显示；`actualWorkdayPunches`（只数工作日）
+     * 不再单独出现在界面上 —— 它和网站对不上，是实测踩过的坑。
+     */
+    val requiredDays: Int? get() = requiredPunches ?: totalWorkdays
+
+    /**
+     * 学校口径的**有效打卡总天数** = 工作日达标 + 周末/节假日照常打卡。
+     *
+     * 这正是学院网站上那个「有效打卡 N 天」：实测某月工作日 5 天 + 法定节假日 2 天，
+     * 网站显示 7 天，而 `actualWorkdayPunches` 只给 5 —— 两个数都没错，是"只数工作日"和"总数"的区别。
+     * 缺 `actualRestdayPunches` 时退回工作日计数，绝不凭空加。
+     *
+     * 与「剩余补打卡机会」（[maxAllowedRestdayPunches]，漏卡后的补录机会）**不是一回事**：
+     * 周末来打卡不会消耗那个额度。
+     */
+    val effectiveDays: Int?
+        get() = actualWorkdayPunches?.let { it + (restdayPunches ?: 0) }
 }
 
 /** A month of attendance, as returned by one request. */
@@ -238,9 +295,31 @@ sealed interface AttendanceRefreshResult {
     data class Success(val month: String, val days: Int) : AttendanceRefreshResult
     data object SessionExpired : AttendanceRefreshResult
     data class Offline(val cached: Boolean) : AttendanceRefreshResult
+
+    /**
+     * 有网，但**连不上学校主机**（DNS / 连接超时 / TLS 失败）。
+     *
+     * 和 [Offline] 分开是有原因的：学生考勤系统在校园网外常常连不上，用户"刷脸出闸 → 走出校园"
+     * 之后就会一直是这个状态 —— 此时界面不能只说"离线"，而要提示回到校园网再刷新，
+     * 否则用户会以为"我明明出闸了，为什么还在馆里计时"。
+     */
+    data class Unreachable(val reason: String) : AttendanceRefreshResult
     data class SchemaChanged(val reason: String) : AttendanceRefreshResult
     data class ServerError(val code: Int) : AttendanceRefreshResult
     data class Failed(val reason: String) : AttendanceRefreshResult
 
     val isSuccess: Boolean get() = this is Success
+
+    /** 数据可能已经过期：连不上学校，界面要给出"回校园网再刷"的提示。 */
+    val needsCampusNetworkHint: Boolean get() = this is Unreachable
 }
+
+/**
+ * 把"网络层失败"翻译成给用户看的结果。
+ *
+ * 设备有网却连不上学校主机，和"设备压根没网"是两件事：前者多半是人已经离开校园网
+ * （学生系统在校外常常不可达），提示应该是"回校园网再刷新"，而不是"你现在离线"。
+ * 抽成纯函数便于单测。
+ */
+fun networkFailureResult(hasNetwork: Boolean, hasCache: Boolean, reason: String): AttendanceRefreshResult =
+    if (hasNetwork) AttendanceRefreshResult.Unreachable(reason) else AttendanceRefreshResult.Offline(hasCache)
