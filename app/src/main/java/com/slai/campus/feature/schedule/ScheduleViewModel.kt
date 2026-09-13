@@ -11,6 +11,9 @@ import com.slai.campus.domain.schedule.RefreshResult
 import com.slai.campus.domain.schedule.ScheduleRepository
 import com.slai.campus.domain.schedule.Semester
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.launch
+import com.slai.campus.domain.schedule.SyncState
+import com.slai.campus.domain.schedule.RefreshPhase
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,8 +43,13 @@ data class WeekUiState(
     val anchored: Boolean = true,
     val hasAnyData: Boolean = false,
     val lastRefresh: RefreshResult? = null,
+    val syncState: SyncState? = null,
+    val refreshing: Boolean = false,
+    val phase: RefreshPhase = RefreshPhase.IDLE,
     val sisState: SessionState = SessionState.UNKNOWN
 ) {
+
+    val hasCache: Boolean get() = syncState?.hasEverSucceeded == true
 
     /**
      * The school session is gone.
@@ -124,8 +132,8 @@ class ScheduleViewModel @Inject constructor(
 
     private val mondayOfSelectedWeek: StateFlow<LocalDate> = weekOffset
         .let { offsets ->
-            combine(offsets, anchor) { offset, _ ->
-                timeProvider.today()
+            combine(offsets, anchor, timeProvider.observeDate()) { offset, _, today ->
+                today
                     .with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
                     .plusWeeks(offset.toLong())
             }
@@ -137,12 +145,20 @@ class ScheduleViewModel @Inject constructor(
             scheduleRepository.observeRange(monday, monday.plusDays(6)).map { classes -> monday to classes }
         }
 
+    private data class SyncProgress(val meta: SyncState, val refreshing: Boolean, val phase: RefreshPhase)
+    private val syncProgress = combine(
+        scheduleRepository.observeSyncState(),
+        scheduleRepository.observeIsRefreshing(),
+        scheduleRepository.observePhase()
+    ) { meta, refreshing, phase -> SyncProgress(meta, refreshing, phase) }
+
     val state: StateFlow<WeekUiState> = combine(
         selectedWeekClasses,
         anchor,
         scheduleRepository.observeLastRefresh(),
-        sessionManager.state
-    ) { (monday, classes), (anchorDate, confirmed), lastRefresh, session ->
+        sessionManager.state,
+        syncProgress
+    ) { (monday, classes), (anchorDate, confirmed), lastRefresh, session, progress ->
         val semester = Semester(firstWeekMonday = anchorDate)
         val weekIndex = semester.weekIndexOf(monday)
         val byDate = classes.groupBy { it.date }
@@ -155,10 +171,20 @@ class ScheduleViewModel @Inject constructor(
             },
             anchored = anchorDate != null,
             hasAnyData = classes.isNotEmpty(),
+            syncState = progress.meta,
+            refreshing = progress.refreshing,
+            phase = progress.phase,
             lastRefresh = lastRefresh,
             sisState = session.sis
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekUiState())
+
+    private var refreshJob: kotlinx.coroutines.Job? = null
+
+    fun refresh() {
+        if (refreshJob?.isActive == true || state.value.refreshing) return
+        refreshJob = viewModelScope.launch { scheduleRepository.refresh() }
+    }
 
     fun previousWeek() {
         weekOffset.value -= 1

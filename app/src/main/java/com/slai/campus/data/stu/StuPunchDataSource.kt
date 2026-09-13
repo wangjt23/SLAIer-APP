@@ -58,7 +58,8 @@ class StuPunchDataSource @Inject constructor(
 
         val filtered = request(baseUrl, from, to)
         val first = filtered.first
-        if (first is RemoteResult.Success && first.data.isNotEmpty()) {
+        if (first !is RemoteResult.Success) return@withContext Outcome(first, filtered.second)
+        if (first.data.isNotEmpty()) {
             val inRange = first.data.filter { !it.date.isBefore(from) && !it.date.isAfter(to) }
             if (inRange.isNotEmpty()) return@withContext Outcome(RemoteResult.Success(inRange), filtered.second)
         }
@@ -94,6 +95,7 @@ class StuPunchDataSource @Inject constructor(
             .url(url)
             .get()
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
+            .header("Cache-Control", "no-cache, no-store")
             .header("X-Requested-With", "XMLHttpRequest")
             .header("Referer", StuConfig.url(baseUrl, StuConfig.PUNCH_PAGE))
             .build()

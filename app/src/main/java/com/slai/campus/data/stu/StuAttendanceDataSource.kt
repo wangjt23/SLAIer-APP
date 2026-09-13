@@ -56,6 +56,7 @@ class StuAttendanceDataSource @Inject constructor(
             .url(url)
             .post(body)
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
+            .header("Cache-Control", "no-cache, no-store")
             .header("X-Requested-With", "XMLHttpRequest")
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .header("Referer", StuConfig.url(baseUrl, StuConfig.ATTENDANCE_PAGE))

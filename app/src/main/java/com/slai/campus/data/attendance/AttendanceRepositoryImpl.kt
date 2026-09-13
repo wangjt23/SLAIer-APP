@@ -62,6 +62,7 @@ class AttendanceRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
     private val sessionStore: SessionStore,
     private val dataSource: StuAttendanceDataSource,
+    private val stuRemote: com.slai.campus.data.stu.StuRemoteDataSource,
     private val networkMonitor: NetworkMonitor,
     private val timeProvider: TimeProvider,
     @IoDispatcher private val io: CoroutineDispatcher
@@ -154,7 +155,10 @@ class AttendanceRepositoryImpl @Inject constructor(
                 }
 
                 val baseUrl = StuConfig.baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.STU))
-                val outcome = punchDataSource.fetchPunches(baseUrl, from, to)
+                var outcome = punchDataSource.fetchPunches(baseUrl, from, to)
+                if (outcome.result is RemoteResult.SessionExpired && stuRemote.renewSession(baseUrl)) {
+                    outcome = punchDataSource.fetchPunches(baseUrl, from, to)
+                }
                 AppLog.d("punch fetch $from..$to: ${outcome.result.describe()}")
 
                 when (val result = outcome.result) {
@@ -180,7 +184,7 @@ class AttendanceRepositoryImpl @Inject constructor(
                         punchSyncState.value = punchSyncState.value.copy(
                             lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = result.reason
                         )
-                        AttendanceRefreshResult.Offline(cached = punchDao.countRange(accountHash, from, to) > 0)
+                        networkFailureResult(networkMonitor.hasNetwork, punchDao.countRange(accountHash, from, to) > 0, result.reason)
                     }
                     is RemoteResult.SchemaChanged -> {
                         punchSyncState.value = punchSyncState.value.copy(
@@ -246,7 +250,10 @@ class AttendanceRepositoryImpl @Inject constructor(
             }
 
             val baseUrl = StuConfig.baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.STU))
-            val outcome = dataSource.fetchMonth(baseUrl, month)
+            var outcome = dataSource.fetchMonth(baseUrl, month)
+            if (outcome.result is RemoteResult.SessionExpired && stuRemote.renewSession(baseUrl)) {
+                outcome = dataSource.fetchMonth(baseUrl, month)
+            }
             AppLog.d("attendance fetch $month: ${outcome.result.describe()}")
 
             when (val result = outcome.result) {

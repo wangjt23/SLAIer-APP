@@ -13,7 +13,7 @@ import javax.inject.Inject
  * Application entry point.
  *
  * Does three things and nothing else: initialises Hilt, wires WorkManager through Hilt (so workers
- * can inject repositories), and registers the periodic background sync.
+ * can inject repositories), and cancels legacy periodic timetable sync.
  */
 @HiltAndroidApp
 class CampusApp : Application(), Configuration.Provider {
@@ -30,9 +30,9 @@ class CampusApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         NotificationHelper.ensureChannels(this)
-        // Periodic sync is registered unconditionally; the worker itself refuses to run when there
-        // is no session, so this never becomes a background login prompt.
-        runCatching { ScheduleSyncWorker.enqueuePeriodic(this) }
-            .onFailure { AppLog.w("periodic sync registration failed: ${it.javaClass.simpleName}") }
+        // Upgrade migration: timetable data stays cached until the user requests a refresh.
+        com.slai.campus.worker.ReminderRescheduleWorker.enqueuePeriodic(this)
+        runCatching { ScheduleSyncWorker.cancelAll(this) }
+            .onFailure { AppLog.w("legacy sync cancellation failed: ${it.javaClass.simpleName}") }
     }
 }

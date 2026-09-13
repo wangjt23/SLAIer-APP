@@ -1,5 +1,9 @@
 package com.slai.campus.core.common
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
@@ -28,4 +32,12 @@ class TimeProvider @Inject constructor(
     fun nowLocalTime(): LocalTime = LocalTime.now(clock)
 
     fun epochMillis(): Long = clock.millis()
+
+    /** Emits on collection and when the local date changes; does not access the network. */
+    fun observeDate(): Flow<LocalDate> = flow {
+        while (true) {
+            emit(today())
+            delay(30_000)
+        }
+    }.distinctUntilChanged()
 }

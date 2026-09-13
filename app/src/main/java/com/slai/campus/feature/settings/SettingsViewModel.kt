@@ -197,7 +197,6 @@ class SettingsViewModel @Inject constructor(
             sessionStore.setRemindersEnabled(enabled)
             if (enabled) {
                 reminderScheduler.rescheduleFromCache()
-                ScheduleSyncWorker.enqueuePeriodic(appContext)
             } else {
                 reminderScheduler.cancelAll()
             }

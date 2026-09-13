@@ -104,7 +104,11 @@ object StuCheckInParser {
         return lowered.contains("/a/login") || lowered.contains("jeesite") && lowered.contains("login")
     }
 
-    fun isLoginUrl(url: String?): Boolean = url?.contains(StuConfig.LOGIN_PATH) == true
+    fun isLoginUrl(url: String?): Boolean {
+        val value = url?.lowercase().orEmpty()
+        return value.contains(StuConfig.LOGIN_PATH) || value.contains("/sso/login") ||
+            value.contains("/adfs/oauth2/authorize")
+    }
 
     fun preview(body: String?): String = Redactor.preview(body, 300)
 }

@@ -13,19 +13,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.HelpOutline
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -43,14 +39,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.slai.campus.R
 import com.slai.campus.core.common.SchoolSystem
-import com.slai.campus.core.session.SessionSnapshot
-import com.slai.campus.core.session.SessionState
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.schedule.ClassOccurrence
 import com.slai.campus.ui.components.CampusHero
 import com.slai.campus.ui.currentLocale
 import com.slai.campus.ui.datePatternFor
-import com.slai.campus.domain.schedule.RefreshResult
 import com.slai.campus.domain.schedule.ScheduleSource
 import com.slai.campus.navigation.AppNavigator
 import com.slai.campus.navigation.Tab
@@ -63,29 +56,20 @@ import java.util.Locale
  * Reads Room first and always: the screen renders the cached timetable before any network call is
  * even attempted, which is what makes the app usable offline and on a cold start.
  *
- * The status row distinguishes the five failure classes, because the plan requires the user to be
- * able to tell "no classes today" from "we could not ask the server".
+ * Timetable sync controls live on the schedule screen; session expiry does not hide cached classes.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     navigator: AppNavigator,
-    session: SessionSnapshot,
-    webCompleting: Boolean,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val manualRefreshing by viewModel.manualRefreshing.collectAsStateWithLifecycle()
-    // The button tracks the user's own request. A background sync must never disable it or make it
-    // spin — that is exactly what made the first version look frozen.
-    val refreshing = manualRefreshing
-    val backgroundSyncing = state.isRefreshing && !manualRefreshing
-
+    val attendanceRefreshing by viewModel.attendanceRefreshing.collectAsStateWithLifecycle()
+    val attendanceResult by viewModel.attendanceResult.collectAsStateWithLifecycle()
     val today = java.time.LocalDate.now()
     // 日期格式与语言一致：中文 "9月10日 星期四"，英文 "Thursday, Sep 10"。
     val dateFormatter = DateTimeFormatter.ofPattern(datePatternFor(currentLocale()), currentLocale())
-    // 点击回调不是 @Composable，字符串要在外面取好。
-    val signInLabel = stringResource(R.string.schedule_sign_in)
 
     Scaffold(
         topBar = {
@@ -107,125 +91,99 @@ fun HomeScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        PullToRefreshBox(
+            isRefreshing = attendanceRefreshing,
+            onRefresh = viewModel::refreshAttendance,
+            modifier = Modifier.fillMaxSize().padding(padding)
         ) {
-            item {
-                CampusHero(subtitle = stringResource(R.string.hero_subtitle))
-            }
-
-            /*
-             * 课表区块整体受「设置 → 课表 → 首页显示课表」控制：博二、博三基本没课，首页上
-             * 一片"暂无课表数据"和一块同步状态都是噪音，关掉之后这里只剩考勤。
-             * 需要登录教务系统的那张提示卡也属于课表区块 —— 不看课表的人不该被催着登录。
-             */
-            if (state.showTimetable) {
-                if (state.needsLogin) {
-                    item { NeedsLoginCard(navigator, state) }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    CampusHero(subtitle = stringResource(R.string.hero_subtitle))
                 }
 
-                when {
-                    refreshing && state.today.isEmpty() -> item { LoadingCard(state.phase) }
+                // 课表区块只展示缓存，设置开关控制是否显示。
+                if (state.showTimetable) {
+                    when {
+                        state.today.isEmpty() -> item {
+                            EmptyTodayCard(
+                                isFirstRun = state.isFirstRun,
+                                onOpenSchedule = { navigator.openTab(Tab.SCHEDULE) },
+                                onOpenWeb = {
+                                    state.urls?.sisSchedulePage?.let {
+                                        navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
+                                    }
+                                }
+                            )
+                        }
 
-                    state.today.isEmpty() -> item {
-                        EmptyTodayCard(
-                            isFirstRun = state.isFirstRun,
-                            onLogin = {
-                                val entry = state.urls?.sisEntry
-                                if (entry != null) {
-                                    navigator.openWeb(entry, signInLabel, SchoolSystem.SIS, true)
-                                } else {
-                                    navigator.openTab(Tab.SETTINGS)
-                                }
-                            },
-                            onOpenWeb = {
-                                state.urls?.sisSchedulePage?.let {
-                                    navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                                }
-                            }
-                        )
+                        else -> items(state.today, key = { it.id }) { occurrence ->
+                            ClassCard(occurrence)
+                        }
                     }
 
-                    else -> items(state.today, key = { it.id }) { occurrence ->
-                        ClassCard(occurrence)
-                    }
+                    item { HorizontalDivider() }
                 }
+
+                item { SectionHeader(stringResource(R.string.home_attendance_title)) }
 
                 item {
-                    SyncRow(
-                        state = state,
-                        refreshing = refreshing,
-                        backgroundSyncing = backgroundSyncing,
-                        onRefresh = viewModel::refresh
+                    AttendanceCard(
+                        record = state.attendance,
+                        minutes = state.attendanceMinutes,
+                        inside = state.attendanceInside,
+                        goalMinutes = state.attendanceGoalMinutes,
+                        refreshing = attendanceRefreshing,
+                        onRefresh = viewModel::refreshAttendance,
+                        onOpenWeb = {
+                            state.urls?.stuCheckInPage?.let {
+                                navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
+                            }
+                        },
+                        onOpenTab = { navigator.openTab(Tab.ATTENDANCE) }
                     )
                 }
 
-                item { HorizontalDivider() }
-            }
+                item {
+                    com.slai.campus.feature.attendance.AttendanceResultRow(attendanceResult, attendanceRefreshing)
+                    if (attendanceResult is com.slai.campus.domain.attendance.AttendanceRefreshResult.SessionExpired) {
+                        TextButton(onClick = {
+                            state.urls?.stuEntry?.let { navigator.openWeb(it, "学生系统登录", SchoolSystem.STU, true) }
+                        }) { Text(stringResource(R.string.action_relogin)) }
+                    }
+                }
 
-            item { SectionHeader(stringResource(R.string.home_attendance_title)) }
+                // 这两个入口都是课表相关的（本周课表 / 教务系统首页），隐藏课表时一并收起；
+                // 课表 Tab 本身仍然保留，需要时从底部导航进。
+                if (state.showTimetable) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { navigator.openTab(Tab.SCHEDULE) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(stringResource(R.string.action_week_schedule)) }
 
-            item {
-                AttendanceCard(
-                    record = state.attendance,
-                    minutes = state.attendanceMinutes,
-                    inside = state.attendanceInside,
-                    goalMinutes = state.attendanceGoalMinutes,
-                    onRefresh = viewModel::refreshAttendance,
-                    onOpenWeb = {
-                        state.urls?.stuCheckInPage?.let {
-                            navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
+                            OutlinedButton(
+                                onClick = {
+                                    state.urls?.sisHomePage?.let {
+                                        navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(stringResource(R.string.action_open_sis)) }
                         }
-                    },
-                    onOpenTab = { navigator.openTab(Tab.ATTENDANCE) }
-                )
-            }
-
-            // 这两个入口都是课表相关的（本周课表 / 教务系统首页），隐藏课表时一并收起；
-            // 课表 Tab 本身仍然保留，需要时从底部导航进。
-            if (state.showTimetable) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { navigator.openTab(Tab.SCHEDULE) },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(stringResource(R.string.action_week_schedule)) }
-
-                        OutlinedButton(
-                            onClick = {
-                                state.urls?.sisHomePage?.let {
-                                    navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(stringResource(R.string.action_open_sis)) }
                     }
                 }
-            }
 
-            if (webCompleting) {
-                item {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text(
-                            text = stringResource(R.string.home_login_syncing),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
             }
-
-            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 }
@@ -293,21 +251,7 @@ private fun sourceLabel(source: ScheduleSource): String = when (source) {
 }
 
 @Composable
-private fun LoadingCard(phase: com.slai.campus.domain.schedule.RefreshPhase) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            Text(phase.label.ifBlank { stringResource(R.string.state_syncing) })
-        }
-    }
-}
-
-@Composable
-private fun EmptyTodayCard(isFirstRun: Boolean, onLogin: () -> Unit, onOpenWeb: () -> Unit) {
+private fun EmptyTodayCard(isFirstRun: Boolean, onOpenSchedule: () -> Unit, onOpenWeb: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -319,167 +263,14 @@ private fun EmptyTodayCard(isFirstRun: Boolean, onLogin: () -> Unit, onOpenWeb: 
             )
             if (isFirstRun) {
                 Text(
-                    text = stringResource(R.string.home_no_data_hint),
+                    text = stringResource(R.string.home_cached_schedule_hint),
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Button(onClick = onLogin) { Text(stringResource(R.string.action_login)) }
+                Button(onClick = onOpenSchedule) { Text(stringResource(R.string.action_week_schedule)) }
             }
             TextButton(onClick = onOpenWeb) { Text(stringResource(R.string.action_open_web)) }
         }
     }
-}
-
-@Composable
-private fun NeedsLoginCard(navigator: AppNavigator, state: HomeUiState) {
-    val lastSync = state.syncState?.lastSuccessAt
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        /*
-         * 用品牌容器色而不是 errorContainer：这是一条"需要你操作"的提示，不是报错。
-         * 深色模式下 errorContainer 是 #93000A，占掉三分之一屏幕会像崩了一样；
-         * 警示信息保留在图标上就够了。
-         */
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(
-                    Icons.Default.ErrorOutline,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error
-                )
-                Text(
-                    text = stringResource(R.string.state_needs_login),
-                    style = MaterialTheme.typography.titleMedium
-                )
-            }
-            Text(
-                text = if (lastSync == null) {
-                    stringResource(R.string.home_never_synced)
-                } else {
-                    stringResource(
-                        R.string.home_last_sync,
-                        lastSync.atZone(java.time.ZoneId.systemDefault())
-                            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                    )
-                },
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        state.urls?.sisEntry?.let {
-                            navigator.openWeb(it, "教务系统登录", SchoolSystem.SIS, true)
-                        }
-                    }
-                ) { Text(stringResource(R.string.action_relogin)) }
-
-                OutlinedButton(onClick = { navigator.openTab(Tab.SCHEDULE) }) {
-                    Text(stringResource(R.string.action_view_cache))
-                }
-            }
-            TextButton(
-                onClick = {
-                    state.urls?.sisHomePage?.let {
-                        navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                    }
-                }
-            ) { Text(stringResource(R.string.action_open_sis)) }
-        }
-    }
-}
-
-@Composable
-private fun SyncRow(
-    state: HomeUiState,
-    refreshing: Boolean,
-    backgroundSyncing: Boolean,
-    onRefresh: () -> Unit
-) {
-    val lastSync = state.syncState?.lastSuccessAt
-    val formatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                when (state.lastRefresh) {
-                    is RefreshResult.Offline -> Icon(
-                        Icons.Default.CloudOff,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    is RefreshResult.SchemaChanged -> Icon(
-                        Icons.Default.HelpOutline,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    else -> Unit
-                }
-                Text(
-                    text = when {
-                        refreshing && state.phase != com.slai.campus.domain.schedule.RefreshPhase.IDLE ->
-                            state.phase.label
-                        backgroundSyncing -> "后台同步中…"
-                        else -> statusText(state, refreshing)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            /*
-             * 刷新是个"偶尔才用"的动作（课表一天变不了几次），所以这里只留一个 20dp 的小图标，
-             * 不再用占满半行的实心按钮 —— 状态文字才是这一行真正要传达的东西。
-             */
-            IconButton(
-                onClick = onRefresh,
-                enabled = !refreshing,
-                modifier = Modifier.size(36.dp)
-            ) {
-                if (refreshing) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.Default.Refresh,
-                        contentDescription = stringResource(R.string.action_refresh),
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
-        if (lastSync != null) {
-            Text(
-                text = stringResource(
-                    R.string.home_last_sync,
-                    lastSync.atZone(java.time.ZoneId.systemDefault()).format(formatter)
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
-private fun statusText(state: HomeUiState, refreshing: Boolean): String = when {
-    refreshing -> stringResource(R.string.state_syncing)
-    state.lastRefresh is RefreshResult.Success -> stringResource(R.string.state_ok)
-    state.lastRefresh is RefreshResult.Offline -> stringResource(R.string.state_offline)
-    state.lastRefresh is RefreshResult.SchemaChanged -> stringResource(R.string.state_schema_changed)
-    state.lastRefresh is RefreshResult.ServerError -> stringResource(R.string.state_server_error)
-    state.lastRefresh is RefreshResult.SessionExpired -> stringResource(R.string.state_needs_login)
-    state.lastRefresh is RefreshResult.Failed -> stringResource(R.string.state_unknown_error)
-    state.hasData -> stringResource(R.string.state_ok)
-    else -> stringResource(R.string.state_never)
 }
 
 /**
@@ -494,6 +285,7 @@ private fun AttendanceCard(
     minutes: Int?,
     inside: Boolean,
     goalMinutes: Int,
+    refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpenWeb: () -> Unit,
     onOpenTab: () -> Unit
@@ -559,7 +351,7 @@ private fun AttendanceCard(
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = onRefresh, label = { Text(stringResource(R.string.action_refresh)) })
+                AssistChip(onClick = onRefresh, enabled = !refreshing, label = { Text(stringResource(R.string.action_refresh)) })
                 AssistChip(onClick = onOpenTab, label = { Text(stringResource(R.string.attendance_title)) })
                 AssistChip(onClick = onOpenWeb, label = { Text(stringResource(R.string.action_open_stu)) })
             }

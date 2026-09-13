@@ -9,15 +9,14 @@ import com.slai.campus.core.session.SessionStore
 import com.slai.campus.core.session.SessionState
 import com.slai.campus.core.web.AppUrlProvider
 import com.slai.campus.core.web.AppUrls
+import com.slai.campus.domain.attendance.AttendanceRefreshResult
+import com.slai.campus.domain.attendance.refreshWithPunches
 import com.slai.campus.domain.attendance.AttendanceRepository
 import com.slai.campus.domain.attendance.AttendancePunch
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.DailyAttendance
 import com.slai.campus.domain.attendance.PunchPairing
 import com.slai.campus.domain.schedule.ClassOccurrence
-import com.slai.campus.domain.schedule.RefreshPhase
-import com.slai.campus.domain.schedule.RefreshReason
-import com.slai.campus.domain.schedule.RefreshResult
 import com.slai.campus.domain.schedule.ScheduleRepository
 import com.slai.campus.domain.schedule.SyncState
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,8 +24,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -35,13 +35,9 @@ import javax.inject.Inject
 data class HomeUiState(
     val today: List<ClassOccurrence> = emptyList(),
     val syncState: SyncState? = null,
-    val isRefreshing: Boolean = false,
-    val lastRefresh: RefreshResult? = null,
     val attendance: AttendanceRecord? = null,
-    val sisState: SessionState = SessionState.UNKNOWN,
     val stuState: SessionState = SessionState.UNKNOWN,
     val urls: AppUrls? = null,
-    val phase: RefreshPhase = RefreshPhase.IDLE,
     val attendanceGoalMinutes: Int = 360,
     val nowDateTime: java.time.LocalDateTime = java.time.LocalDateTime.now(),
     val attendanceDaily: DailyAttendance? = null,
@@ -61,10 +57,6 @@ data class HomeUiState(
     val attendanceInside: Boolean
         get() = attendanceDaily?.currentlyInsideAt(nowDateTime) == true || attendance?.isCurrentlyInside == true
 
-    /** The session is gone: the screen must say "需要重新登录", never "今天没有课". */
-    val needsLogin: Boolean
-        get() = sisState == SessionState.EXPIRED || sisState == SessionState.NEEDS_LOGIN
-
     /** At least one successful sync has ever happened, so the cache is meaningful. */
     val hasData: Boolean get() = syncState?.hasEverSucceeded == true
 
@@ -72,6 +64,7 @@ data class HomeUiState(
     val isFirstRun: Boolean get() = !hasData && today.isEmpty()
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val scheduleRepository: ScheduleRepository,
@@ -82,49 +75,22 @@ class HomeViewModel @Inject constructor(
     private val timeProvider: TimeProvider
 ) : ViewModel() {
 
-    private val _refreshing = MutableStateFlow(false)
-    val manualRefreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
-
     private data class SchedulePart(
         val today: List<ClassOccurrence>,
         val syncState: SyncState,
-        val isRefreshing: Boolean,
-        val lastRefresh: RefreshResult?,
-        val attendance: AttendanceRecord?,
-        val phase: RefreshPhase
-    )
-
-    private data class ScheduleCore(
-        val today: List<ClassOccurrence>,
-        val syncState: SyncState,
-        val isRefreshing: Boolean,
-        val lastRefresh: RefreshResult?,
         val attendance: AttendanceRecord?
     )
 
-    private val scheduleCore = combine(
+    private val schedulePart = combine(
         scheduleRepository.observeToday(),
         scheduleRepository.observeSyncState(),
-        scheduleRepository.observeIsRefreshing(),
-        scheduleRepository.observeLastRefresh(),
-        attendanceRepository.observeDay(timeProvider.today())
-    ) { today, syncState, isRefreshing, lastRefresh, attendance ->
-        ScheduleCore(today, syncState, isRefreshing, lastRefresh, attendance)
-    }
-
-    // kotlinx.coroutines.combine has typed overloads only up to 5 flows, so the phase is folded in
-    // as a second step.
-    private val schedulePart = combine(
-        scheduleCore,
-        scheduleRepository.observePhase()
-    ) { core, phase ->
-        SchedulePart(core.today, core.syncState, core.isRefreshing, core.lastRefresh, core.attendance, phase)
-    }
+        timeProvider.observeDate().flatMapLatest { attendanceRepository.observeDay(it) }
+    ) { today, syncState, attendance -> SchedulePart(today, syncState, attendance) }
 
     private val attendanceGoal = sessionStore.attendanceGoalMinutes
-    private val clock = MutableStateFlow(java.time.LocalDateTime.now())
+    private val clock = MutableStateFlow(timeProvider.nowDateTime())
 
-    private val todayPunches = attendanceRepository.observePunches(timeProvider.today())
+    private val todayPunches = timeProvider.observeDate().flatMapLatest { attendanceRepository.observePunches(it) }
 
     /** 打卡流水 + 时钟 + 「首页显示课表」开关；凑在一起只是因为 combine 最多收 5 个流。 */
     private data class LivePart(
@@ -151,17 +117,13 @@ class HomeViewModel @Inject constructor(
         HomeUiState(
             today = part.today,
             syncState = part.syncState,
-            isRefreshing = part.isRefreshing,
-            lastRefresh = part.lastRefresh,
             attendance = part.attendance,
-            sisState = session.sis,
             stuState = session.stu,
             urls = urls,
-            phase = part.phase,
             attendanceGoalMinutes = goal,
             nowDateTime = live.now,
             attendanceDaily = PunchPairing.of(
-                timeProvider.today(),
+                live.now.toLocalDate(),
                 live.punches,
                 live.now
             ),
@@ -173,37 +135,31 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(60_000)
-                clock.value = java.time.LocalDateTime.now()
-            }
-        }
-        viewModelScope.launch {
-            // A silent refresh at app start; the UI renders the cache while this runs.
-            // 首页不显示课表时干脆不请求：那块数据没人看，没必要为它唤醒一次网络。
-            if (sessionStore.showTimetableOnHome.first() &&
-                sessionManager.stateOf(SchoolSystem.SIS) == SessionState.AUTHENTICATED
-            ) {
-                scheduleRepository.refresh(RefreshReason.APP_START)
+                clock.value = timeProvider.nowDateTime()
             }
         }
     }
 
-    fun refresh() {
-        if (_refreshing.value) return
-        viewModelScope.launch {
-            _refreshing.value = true
-            try {
-                scheduleRepository.refresh(RefreshReason.MANUAL)
-            } finally {
-                _refreshing.value = false
-            }
-        }
-    }
+    private val _attendanceRefreshing = MutableStateFlow(false)
+    val attendanceRefreshing = _attendanceRefreshing.asStateFlow()
+    private val _attendanceResult = MutableStateFlow<AttendanceRefreshResult?>(null)
+    val attendanceResult = combine(_attendanceResult, sessionManager.state) { result, session ->
+        result.takeUnless { it is AttendanceRefreshResult.SessionExpired && session.stu == SessionState.AUTHENTICATED }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun refreshAttendance() {
+        if (_attendanceRefreshing.value) return
+        _attendanceRefreshing.value = true
         viewModelScope.launch {
-            val today = timeProvider.today()
-            attendanceRepository.refresh(com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today))
-            attendanceRepository.refreshPunches(today, today)
+            try {
+                val today = timeProvider.today()
+                _attendanceResult.value = attendanceRepository.refreshWithPunches(
+                    com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today), today, today
+                )
+                clock.value = timeProvider.nowDateTime()
+            } finally {
+                _attendanceRefreshing.value = false
+            }
         }
     }
 }

@@ -13,6 +13,8 @@ import com.slai.campus.core.session.SessionState
 import com.slai.campus.core.session.SessionStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
@@ -34,6 +36,16 @@ class StuRemoteDataSource @Inject constructor(
     private val sessionStore: SessionStore,
     @IoDispatcher private val io: CoroutineDispatcher
 ) {
+
+    private val renewalMutex = Mutex()
+
+    /** Walk the existing SSO session once; never clear cookies or submit credentials. */
+    suspend fun renewSession(baseUrl: String): Boolean = withContext(io) {
+        renewalMutex.withLock {
+            if (!networkMonitor.hasNetwork) return@withLock false
+            renewStuSession(apiClient, baseUrl)
+        }
+    }
 
     data class CheckInOutcome(
         val result: RemoteResult<StuCheckInAnswer>,

@@ -2,6 +2,7 @@ package com.slai.campus.feature.schedule
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,7 +16,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material3.CircularProgressIndicator
+import com.slai.campus.domain.schedule.RefreshResult
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -107,6 +113,21 @@ fun WeekScheduleScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item {
+                ScheduleSyncRow(state, state.refreshing, viewModel::refresh)
+                Text(
+                    stringResource(R.string.schedule_cache_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (state.needsLogin || !state.hasCache) {
+                    urls?.let { appUrls ->
+                        TextButton(onClick = {
+                            navigator.openWeb(appUrls.sisEntry, "教务系统登录", SchoolSystem.SIS, true)
+                        }) { Text(stringResource(R.string.action_relogin)) }
+                    }
+                }
+            }
             if (!state.anchored) {
                 item {
                     Card(
@@ -132,7 +153,7 @@ fun WeekScheduleScreen(
                 }
             }
 
-            if (!state.hasAnyData) {
+            if (!state.hasAnyData && !state.hasCache) {
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -146,30 +167,6 @@ fun WeekScheduleScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-
-                        if (state.needsLogin) {
-                            urls?.let { appUrls ->
-                                Button(
-                                    onClick = {
-                                        navigator.openWeb(
-                                            appUrls.sisEntry, "教务系统登录", SchoolSystem.SIS, true
-                                        )
-                                    }
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.Login, contentDescription = null)
-                                    Text(stringResource(R.string.schedule_sign_in))
-                                }
-                            }
-                            Text(
-                                text = stringResource(R.string.reason_session_hint),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            TextButton(onClick = { navigator.openTab(Tab.HOME) }) {
-                                Text(stringResource(R.string.schedule_back_home))
-                            }
-                        }
 
                         urls?.let { appUrls ->
                             TextButton(
@@ -300,4 +297,97 @@ private fun EmptyReason.text(): String = when (this) {
     is EmptyReason.SchemaChanged -> stringResource(R.string.reason_schema_changed, detail)
     is EmptyReason.Failed -> stringResource(R.string.reason_failed, detail)
     EmptyReason.NeverSynced -> stringResource(R.string.reason_never_synced)
+}
+
+@Composable
+private fun ScheduleSyncRow(
+    state: WeekUiState,
+    refreshing: Boolean,
+    onRefresh: () -> Unit
+) {
+    val lastSync = state.syncState?.lastSuccessAt
+    val formatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                when (state.lastRefresh) {
+                    is RefreshResult.Offline -> Icon(
+                        Icons.Default.CloudOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    is RefreshResult.SchemaChanged -> Icon(
+                        Icons.Default.HelpOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    else -> Unit
+                }
+                Text(
+                    text = when {
+                        refreshing && state.phase != com.slai.campus.domain.schedule.RefreshPhase.IDLE ->
+                            state.phase.label
+                        else -> statusText(state, refreshing)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            /*
+             * 刷新是个"偶尔才用"的动作（课表一天变不了几次），所以这里只留一个 20dp 的小图标，
+             * 不再用占满半行的实心按钮 —— 状态文字才是这一行真正要传达的东西。
+             */
+            IconButton(
+                onClick = onRefresh,
+                enabled = !refreshing,
+                modifier = Modifier.size(36.dp)
+            ) {
+                if (refreshing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = stringResource(R.string.action_refresh),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+
+        if (lastSync != null) {
+            Text(
+                text = stringResource(
+                    R.string.home_last_sync,
+                    lastSync.atZone(java.time.ZoneId.systemDefault()).format(formatter)
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun statusText(state: WeekUiState, refreshing: Boolean): String = when {
+    refreshing -> stringResource(R.string.state_syncing)
+    state.needsLogin -> stringResource(R.string.schedule_login_to_refresh)
+    state.lastRefresh is RefreshResult.Success -> stringResource(R.string.state_ok)
+    state.lastRefresh is RefreshResult.Offline -> stringResource(R.string.state_offline)
+    state.lastRefresh is RefreshResult.SchemaChanged -> stringResource(R.string.state_schema_changed)
+    state.lastRefresh is RefreshResult.ServerError -> stringResource(R.string.state_server_error)
+    state.lastRefresh is RefreshResult.SessionExpired -> stringResource(R.string.state_needs_login)
+    state.lastRefresh is RefreshResult.Failed -> stringResource(R.string.state_unknown_error)
+    state.hasCache -> stringResource(R.string.state_ok)
+    else -> stringResource(R.string.state_never)
 }

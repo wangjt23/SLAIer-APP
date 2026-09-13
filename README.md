@@ -6,7 +6,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Android%208.0%2B-3DDC84">
   <img alt="kotlin" src="https://img.shields.io/badge/Kotlin-2.2-7F52FF">
   <img alt="compose" src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4">
-  <img alt="tests" src="https://img.shields.io/badge/tests-154%20passing-success">
+  <img alt="tests" src="https://img.shields.io/badge/tests-215%20passing-success">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -41,7 +41,7 @@
 **推荐：从 [Releases](../../releases) 下载 APK。**
 
 ```text
-slaier-1.0.0.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
+slaier-1.1.1.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
 SHA256SUMS.txt         校验用
 ```
 
@@ -49,7 +49,7 @@ SHA256SUMS.txt         校验用
 
 ```bash
 # A. 用 adb（手机上需打开「USB 调试」）
-adb install -r slaier-1.0.0.apk
+adb install -r slaier-1.1.1.apk
 ```
 
 **B. 手机上直接点开 APK** —— 把文件传到手机（微信文件传输 / 数据线 / 网盘），点击安装，
@@ -60,8 +60,8 @@ adb install -r slaier-1.0.0.apk
 校验下载是否完整：
 
 ```bash
-shasum -a 256 slaier-1.0.0.apk      # macOS / Linux
-certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
+shasum -a 256 slaier-1.1.1.apk      # macOS / Linux
+certutil -hashfile slaier-1.1.1.apk SHA256   # Windows
 ```
 
 > 系统要求：**Android 8.0（API 26）及以上**，targetSdk 36。
@@ -71,14 +71,14 @@ certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
 ## 2. 第一次使用（约 1 分钟）
 
 ```text
-1. 打开 App → 首页会提示「需要重新登录」
-2. 点「登录教务系统」→ 在 App 内嵌页面里完成学校的 AD FS 登录
+1. 打开 App → 进入「课表」页
+2. 点登录入口 → 在 App 内嵌页面里完成学校的 AD FS 登录
    （账号密码只进学校的页面，App 读不到、也不保存）
-3. 回到首页 → 点「刷新」→ 课表出现
-4. 切到「考勤」→ 点「刷新」→ 打卡记录出现
+3. 登录完成后提取课表并缓存，之后首页可直接查看；需要更新时在课表页手动刷新
+4. 切到「考勤」→ 登录学生系统 → 点刷新或下拉刷新获取最新记录
 ```
 
-**登录状态大约半小时会过期**，这是学校服务器的设定。过期后 App 会：
+**学校登录状态可能过期，但不影响查看缓存课表**。手动刷新需要联网，会话失效时 App 会：
 
 1. 先**静默续期** —— 沿学校的 SSO 链走一遍，如果你的 AD FS 会话还在，无需任何输入就能拿回新会话；
 2. 静默续期失败才提示「需要重新登录」，点一下重新走一遍即可。
@@ -106,7 +106,7 @@ certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
 
 ### 如果课表没出来
 
-`设置 → 开发者诊断 → 真实刷新` 会跑**和首页刷新完全相同**的链路，打印每一步，然后直接查本地数据库。
+`设置 → 开发者诊断 → 真实刷新` 会跑**和课表页刷新完全相同**的链路，打印每一步，然后直接查本地数据库。
 把输出发到 Issues 即可定位 —— 现在抓不到的原因都能从这段日志里读出来。
 
 ---
@@ -121,7 +121,7 @@ certutil -hashfile slaier-1.0.0.apk SHA256   # Windows
 | 课表本地缓存（Room），断网可看                                         | ✅   |
 | **考勤**：每日进出闸时间、当天累计时长、6 小时目标进度、本月明细 | ✅   |
 | 上课提醒（标准 / 精确两种，重启后自动重排）                            | ✅   |
-| 后台同步（WorkManager，6 小时）                                        | ✅   |
+| 课表长期缓存，课表页手动更新；考勤支持下拉刷新                          | ✅   |
 | 登录失效检测 +**静默 SSO 续期**                                  | ✅   |
 | 登录成功后自动回到 App（看网页时则不打扰）                             | ✅   |
 | 应用内更新（检查 GitHub Release → 校验 → 交给系统安装器）              | ✅   |
@@ -379,8 +379,8 @@ app/src/main/java/com/slai/campus/
    换学校需要在 `SisConfig` / `StuConfig` 里改常量，并重新做一遍抓包（用「抓包学习」功能最快）。
 2. **学期第一周锚点**：正方只给"第 N 周"，不给日历日期。App 从服务端 `week` 字段反推，
    失败时按学期估算，并允许在设置里手动确认。
-3. **后台同步不是精确定时**：WorkManager 最小周期 15 分钟且不保证准时；本 App 用 6 小时周期，
-   只为保持缓存新鲜。
+3. **课表需要手动更新**：启动和后台不再请求课表，登录过期也可查看本地缓存。
+   在课表页查看同步信息并刷新；课程提醒仍每 12 小时从本地缓存重新安排。
 4. **课程名 / 教师名 / 学校的"合格"判定是中文**，英文界面下这几项仍是中文 ——
    它们是服务端返回的数据，不是界面文案。
 5. **诊断页与接口配置页目前只有中文**（开发者工具，优先级低）。

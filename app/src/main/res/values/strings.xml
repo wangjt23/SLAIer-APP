@@ -257,4 +257,7 @@
     <string name="theme_system">跟随系统</string>
     <string name="theme_light">浅色</string>
     <string name="theme_dark">深色</string>
+    <string name="home_cached_schedule_hint">前往课表页获取课表，之后可一直离线查看。</string>
+    <string name="schedule_cache_hint">课表缓存在本机，需要更新时再手动刷新。</string>
+    <string name="schedule_login_to_refresh">更新课表需要登录（缓存仍可查看）</string>
 </resources>

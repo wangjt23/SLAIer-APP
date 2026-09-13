@@ -42,6 +42,15 @@ class ReminderRescheduleWorker @AssistedInject constructor(
         const val KEY_COUNT = "count"
         private const val NAME = "reminder_reschedule"
 
+        fun enqueuePeriodic(context: Context) {
+            val request = androidx.work.PeriodicWorkRequestBuilder<ReminderRescheduleWorker>(
+                12, java.util.concurrent.TimeUnit.HOURS
+            ).build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                "reminder_reschedule_periodic", androidx.work.ExistingPeriodicWorkPolicy.KEEP, request
+            )
+        }
+
         fun enqueue(context: Context) {
             val request = OneTimeWorkRequestBuilder<ReminderRescheduleWorker>()
                 .addTag(NAME)

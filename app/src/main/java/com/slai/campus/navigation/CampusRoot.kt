@@ -131,9 +131,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
             Box(modifier = Modifier.fillMaxSize().padding(padding)) {
                 when (selectedTab) {
                     Tab.HOME -> HomeScreen(
-                        navigator = navigator,
-                        session = session,
-                        webCompleting = webCompleting
+                        navigator = navigator
                     )
                     Tab.SCHEDULE -> WeekScheduleScreen(navigator = navigator)
                     Tab.ATTENDANCE -> AttendanceScreen(navigator = navigator)

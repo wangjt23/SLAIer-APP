@@ -24,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -85,10 +86,10 @@ fun AttendanceScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::previousMonth) {
+                    IconButton(onClick = viewModel::previousMonth, enabled = !state.refreshing) {
                         Icon(Icons.Default.ChevronLeft, contentDescription = stringResource(R.string.cd_previous_month))
                     }
-                    IconButton(onClick = viewModel::nextMonth) {
+                    IconButton(onClick = viewModel::nextMonth, enabled = !state.refreshing) {
                         Icon(Icons.Default.ChevronRight, contentDescription = stringResource(R.string.cd_next_month))
                     }
                     IconButton(onClick = viewModel::refresh, enabled = !state.refreshing) {
@@ -98,119 +99,125 @@ fun AttendanceScreen(
             )
         }
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        PullToRefreshBox(
+            isRefreshing = state.refreshing,
+            onRefresh = viewModel::refresh,
+            modifier = Modifier.fillMaxSize().padding(padding)
         ) {
-            if (state.stuNeedsLogin) {
-                item { NeedsLoginCard(navigator, state) }
-            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (state.stuNeedsLogin) {
+                    item { NeedsLoginCard(navigator, state) }
+                }
 
-            item { TodayCard(state) }
+                item { TodayCard(state) }
 
-            // 常驻提示：闸机记录不是实时的。"刚出闸却还显示在馆中"就来自这个延迟。
-            item { DelayNote() }
+                // 常驻提示：闸机记录不是实时的。"刚出闸却还显示在馆中"就来自这个延迟。
+                item { DelayNote() }
 
-            // 连不上学校时（多半是人已离开校园网），把"回校园网再刷"说清楚。
-            if (state.lastResult?.needsCampusNetworkHint == true) {
-                item { UnreachableCard() }
-            }
+                // 连不上学校时（多半是人已离开校园网），把"回校园网再刷"说清楚。
+                if (state.lastResult?.needsCampusNetworkHint == true) {
+                    item { UnreachableCard() }
+                }
 
-            if (state.monthData.summary.hasAnything) {
-                item { MonthSummaryCard(state) }
-            }
+                if (state.monthData.summary.hasAnything) {
+                    item { MonthSummaryCard(state) }
+                }
 
-            item {
-                Text(
-                    text = stringResource(R.string.attendance_month_detail),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            when {
-                state.refreshing && !state.hasData -> item { LoadingRow() }
-
-                !state.hasData -> item {
-                    EmptyCard(
-                        onRefresh = viewModel::refresh,
-                        onOpenWeb = {
-                            state.urls?.stuCheckInPage?.let {
-                                navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
-                            }
-                        }
+                item {
+                    Text(
+                        text = stringResource(R.string.attendance_month_detail),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
 
-                else -> {
-                    /*
-                     * 明细按**学校自己的周分组**渲染：学院的口径是"一周任意 5 天即可"，
-                     * 所以周标题上直接给「计入 N/5 天」，超出的合格日在行内灰显说明。
-                     */
-                    val weeks = state.monthData.weeks
-                    if (weeks.isEmpty()) {
-                        // 兜底：学校没给周分组时退回平铺，至少不丢数据。
-                        items(state.days, key = { it.date.toEpochDay() }) { record ->
-                            DayCard(
-                                record = record,
-                                isToday = record.date == state.todayDate,
-                                punchDay = state.punchDay(record.date),
-                                punchMinutes = state.punchMinutes(record.date),
-                                discarded = state.hasDiscarded(record.date),
-                                notCounted = false,
-                                now = state.nowDateTime,
-                                formatter = dayFormatter
-                            )
-                        }
-                    } else {
-                        weeks.forEach { week ->
-                            item(key = "week-${week.range}") { WeekHeader(week, dayFormatter) }
-                            items(week.records, key = { it.date.toEpochDay() }) { record ->
+                when {
+                    state.refreshing && !state.hasData -> item { LoadingRow() }
+
+                    !state.hasData -> item {
+                        EmptyCard(
+                            onRefresh = viewModel::refresh,
+                            onOpenWeb = {
+                                state.urls?.stuCheckInPage?.let {
+                                    navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
+                                }
+                            }
+                        )
+                    }
+
+                    else -> {
+                        /*
+                         * 明细按**学校自己的周分组**渲染：学院的口径是"一周任意 5 天即可"，
+                         * 所以周标题上直接给「计入 N/5 天」，超出的合格日在行内灰显说明。
+                         */
+                        val weeks = state.monthData.weeks
+                        if (weeks.isEmpty()) {
+                            // 兜底：学校没给周分组时退回平铺，至少不丢数据。
+                            items(state.days, key = { it.date.toEpochDay() }) { record ->
                                 DayCard(
                                     record = record,
                                     isToday = record.date == state.todayDate,
                                     punchDay = state.punchDay(record.date),
                                     punchMinutes = state.punchMinutes(record.date),
                                     discarded = state.hasDiscarded(record.date),
-                                    notCounted = state.isNotCounted(record.date),
+                                    notCounted = false,
                                     now = state.nowDateTime,
                                     formatter = dayFormatter
                                 )
                             }
+                        } else {
+                            weeks.forEach { week ->
+                                item(key = "week-${week.range}") { WeekHeader(week, dayFormatter) }
+                                items(week.records, key = { it.date.toEpochDay() }) { record ->
+                                    DayCard(
+                                        record = record,
+                                        isToday = record.date == state.todayDate,
+                                        punchDay = state.punchDay(record.date),
+                                        punchMinutes = state.punchMinutes(record.date),
+                                        discarded = state.hasDiscarded(record.date),
+                                        notCounted = state.isNotCounted(record.date),
+                                        now = state.nowDateTime,
+                                        formatter = dayFormatter
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            item {
-                ResultRow(state.lastResult, state.refreshing)
-            }
+                item {
+                    AttendanceResultRow(state.lastResult, state.refreshing)
+                }
 
-            item { HorizontalDivider() }
+                item { HorizontalDivider() }
 
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            state.urls?.stuCheckInPage?.let {
-                                navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text(stringResource(R.string.attendance_open_page), modifier = Modifier.padding(start = 6.dp))
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                state.urls?.stuCheckInPage?.let {
+                                    navigator.openWeb(it.url, it.label, SchoolSystem.STU, false)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(stringResource(R.string.attendance_open_page), modifier = Modifier.padding(start = 6.dp))
+                        }
                     }
                 }
-            }
 
-            item {
-                Text(
-                    text = stringResource(R.string.attendance_source_note),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                item {
+                    Text(
+                        text = stringResource(R.string.attendance_source_note),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -769,7 +776,7 @@ private fun UnreachableCard() {
 }
 
 @Composable
-private fun ResultRow(result: AttendanceRefreshResult?, refreshing: Boolean) {
+internal fun AttendanceResultRow(result: AttendanceRefreshResult?, refreshing: Boolean) {
     val text = when {
         refreshing -> "正在同步…"
         result is AttendanceRefreshResult.Success -> "已同步：${result.days} 天"

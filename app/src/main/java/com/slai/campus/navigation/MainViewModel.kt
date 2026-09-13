@@ -14,7 +14,6 @@ import com.slai.campus.core.session.SessionSnapshot
 import com.slai.campus.core.session.SessionState
 import com.slai.campus.domain.schedule.RefreshReason
 import com.slai.campus.domain.schedule.ScheduleRepository
-import com.slai.campus.worker.ScheduleSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -37,6 +36,8 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val scheduleRepository: ScheduleRepository,
+    private val attendanceRepository: com.slai.campus.domain.attendance.AttendanceRepository,
+    private val timeProvider: com.slai.campus.core.common.TimeProvider,
     private val urlProvider: AppUrlProvider,
     private val captureBus: CaptureBus,
     private val updateRepository: com.slai.campus.domain.update.UpdateRepository,
@@ -75,9 +76,8 @@ class MainViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            // Probe silently on start: it tells the home screen whether to show the
-            // "需要重新登录" banner without ever opening a login UI by itself.
-            runCatching { sessionManager.probeAll() }
+            // Cached timetable reads never need a live SIS session.
+            runCatching { sessionManager.probe(SchoolSystem.STU) }
                 .onFailure { AppLog.w("startup probe failed: ${it.javaClass.simpleName}") }
         }
         viewModelScope.launch {
@@ -92,7 +92,7 @@ class MainViewModel @Inject constructor(
      * Called by the WebView overlay after every page load.
      *
      * When the user lands back inside a protected business page, the login flow has completed: probe
-     * the session, and on success immediately refresh the timetable and enqueue a background sync.
+     * the session, and on success refresh data for that system.
      * This closes the loop the plan describes in §15.
      */
     fun onWebPageFinished(url: String, isLoginFlow: Boolean) {
@@ -110,12 +110,18 @@ class MainViewModel @Inject constructor(
                 val state = sessionManager.probe(landed)
                 AppLog.i("login flow finished for $landed: $state")
                 if (state == SessionState.AUTHENTICATED) {
-                    // 先让 WebView 退场，再刷新课表：用户马上回到 App 并看到"正在同步"，
+                    // 先让 WebView 退场，再刷新对应系统的数据，
                     // 不必等这一轮请求跑完（那可能要好几秒）。
                     _loginCompleted.tryEmit(Unit)
                     sessionManager.requireAccountHash()
-                    scheduleRepository.refresh(RefreshReason.AFTER_LOGIN)
-                    ScheduleSyncWorker.enqueuePeriodic(appContext)
+                    when (landed) {
+                        SchoolSystem.SIS -> scheduleRepository.refresh(RefreshReason.AFTER_LOGIN)
+                        SchoolSystem.STU -> {
+                            val today = timeProvider.today()
+                            attendanceRepository.refresh(com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today))
+                            attendanceRepository.refreshPunches(today.withDayOfMonth(1).minusDays(7), today.withDayOfMonth(1).plusMonths(1).minusDays(1))
+                        }
+                    }
                 }
             } finally {
                 _webCompleting.value = false

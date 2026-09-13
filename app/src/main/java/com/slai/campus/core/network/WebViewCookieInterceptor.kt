@@ -37,7 +37,11 @@ class WebViewCookieInterceptor @Inject constructor(
             original.newBuilder()
                 .header("Cookie", cookie)
                 // Some school gateways serve different content to unknown agents; keep it stable.
-                .header("Referer", original.url.newBuilder().encodedPath("/").build().toString())
+                .apply {
+                    if (original.header("Referer") == null) {
+                        header("Referer", original.url.newBuilder().encodedPath("/").build().toString())
+                    }
+                }
                 .build()
         }
 

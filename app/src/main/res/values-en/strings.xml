@@ -264,4 +264,7 @@
     <string name="theme_system">Follow system</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
+    <string name="home_cached_schedule_hint">Get your timetable on the Schedule page, then view it offline.</string>
+    <string name="schedule_cache_hint">Your timetable is cached on this device. Refresh manually when needed.</string>
+    <string name="schedule_login_to_refresh">Sign in to update; cached classes remain available</string>
 </resources>

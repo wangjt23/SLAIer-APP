@@ -113,7 +113,7 @@ class ScheduleRepositoryImpl @Inject constructor(
     private var lastCompletedAt = 0L
 
     override fun observeToday(): Flow<List<ClassOccurrence>> =
-        observeRange(timeProvider.today(), timeProvider.today())
+        timeProvider.observeDate().flatMapLatest { date -> observeRange(date, date) }
 
     override fun observeWeek(): Flow<List<ClassOccurrence>> {
         val monday = timeProvider.today()

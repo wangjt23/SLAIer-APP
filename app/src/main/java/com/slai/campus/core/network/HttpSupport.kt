@@ -57,8 +57,8 @@ object HttpClientFactory {
      * Follows redirects. Used when loading an HTML page whose redirects are all part of the normal
      * navigation (the school's SSO dance).
      */
-    fun webClient(builder: OkHttpClient.Builder, interceptor: WebViewCookieInterceptor): OkHttpClient =
-        builder
+    fun webClient(builder: OkHttpClient.Builder, interceptor: okhttp3.Interceptor): OkHttpClient =
+        builder.build().newBuilder()
             .addInterceptor(interceptor)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -69,8 +69,8 @@ object HttpClientFactory {
      * unauthenticated ZFSoft request answers `302 -> /yjsxt/xtgl/login_slogin.html`, and hiding that
      * behind an automatic redirect would turn a clear "logged out" into an ambiguous HTML page.
      */
-    fun apiClient(builder: OkHttpClient.Builder, interceptor: WebViewCookieInterceptor): OkHttpClient =
-        builder
+    fun apiClient(builder: OkHttpClient.Builder, interceptor: okhttp3.Interceptor): OkHttpClient =
+        builder.build().newBuilder()
             .addInterceptor(interceptor)
             .followRedirects(false)
             .followSslRedirects(false)

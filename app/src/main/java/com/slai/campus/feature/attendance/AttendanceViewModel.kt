@@ -14,6 +14,7 @@ import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.DailyAttendance
 import com.slai.campus.domain.attendance.PunchPairing
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
+import com.slai.campus.domain.attendance.refreshWithPunches
 import com.slai.campus.domain.attendance.AttendanceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -152,7 +153,7 @@ class AttendanceViewModel @Inject constructor(
 
     private val monthFlow = month.flatMapLatest { repository.observeMonth(it) }
 
-    private val clock = MutableStateFlow(java.time.LocalDateTime.now())
+    private val clock = MutableStateFlow(timeProvider.nowDateTime())
 
     private data class Core(
         val month: String,
@@ -163,7 +164,7 @@ class AttendanceViewModel @Inject constructor(
     )
 
     // kotlinx combine() has typed overloads only up to 5 flows, so the pieces are folded together.
-    private val todayPunches = repository.observePunches(todayDate)
+    private val todayPunches = timeProvider.observeDate().flatMapLatest { repository.observePunches(it) }
 
     /**
      * 明细里出现的第一天可能属于上个月 —— 学校按**教学周**分组，2026-09 的第 1 周就是
@@ -196,7 +197,7 @@ class AttendanceViewModel @Inject constructor(
 
     private val core = combine(
         month,
-        repository.observeDay(todayDate),
+        timeProvider.observeDate().flatMapLatest { repository.observeDay(it) },
         monthFlow,
         allPunches,
         refreshing
@@ -227,7 +228,9 @@ class AttendanceViewModel @Inject constructor(
             today = c.today,
             monthData = c.monthData,
             refreshing = c.refreshing,
-            lastResult = c.lastResult,
+            lastResult = c.lastResult.takeUnless {
+                it is AttendanceRefreshResult.SessionExpired && session.stu == SessionState.AUTHENTICATED
+            },
             todayDaily = PunchPairing.of(todayDate, c2.punches.today, now),
             daily = PunchPairing.daily(c2.punches.month, now),
             urls = urls,
@@ -241,44 +244,48 @@ class AttendanceViewModel @Inject constructor(
 
     init {
         // Load the current month once on first open.
-        viewModelScope.launch {
-            repository.refresh(month.value)
-            refreshPunches()
-        }
+        refresh()
         // Keep "still inside" time ticking without hammering the server.
         viewModelScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(60_000)
-                clock.value = java.time.LocalDateTime.now()
+                clock.value = timeProvider.nowDateTime()
             }
         }
     }
 
     fun refresh() {
         if (refreshing.value) return
+        val selectedMonth = month.value
+        refreshing.value = true
         viewModelScope.launch {
-            refreshing.value = true
             try {
-                lastResult.value = repository.refresh(month.value)
-                refreshPunches()
+                val (from, to) = punchSpanFor(selectedMonth)
+                lastResult.value = repository.refreshWithPunches(selectedMonth, from, to)
+                val today = todayDate
+                if (today !in from..to && lastResult.value !is AttendanceRefreshResult.SessionExpired) {
+                    val todayResult = repository.refreshPunches(today, today)
+                    if (!todayResult.isSuccess) lastResult.value = todayResult
+                }
+                clock.value = timeProvider.nowDateTime()
             } finally {
                 refreshing.value = false
             }
         }
     }
 
-    /** 拉取闸机流水（当天时长、以及明细里每天的进出时间都靠它）。 */
-    private suspend fun refreshPunches() {
-        val (from, to) = punchSpanFor(month.value)
-        repository.refreshPunches(from, to)
-    }
-
     fun previousMonth() {
+        if (refreshing.value) return
         month.value = shiftMonth(month.value, -1)
+        lastResult.value = null
+        refresh()
     }
 
     fun nextMonth() {
+        if (refreshing.value) return
         month.value = shiftMonth(month.value, 1)
+        lastResult.value = null
+        refresh()
     }
 
     fun currentMonth() = currentMonthString()
