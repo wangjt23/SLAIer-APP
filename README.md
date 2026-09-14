@@ -6,7 +6,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Android%208.0%2B-3DDC84">
   <img alt="kotlin" src="https://img.shields.io/badge/Kotlin-2.2-7F52FF">
   <img alt="compose" src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4">
-  <img alt="tests" src="https://img.shields.io/badge/tests-215%20passing-success">
+  <img alt="tests" src="https://img.shields.io/badge/tests-221%20passing-success">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -41,7 +41,7 @@
 **推荐：从 [Releases](../../releases) 下载 APK。**
 
 ```text
-slaier-1.1.1.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
+slaier-1.1.2.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
 SHA256SUMS.txt         校验用
 ```
 
@@ -49,7 +49,7 @@ SHA256SUMS.txt         校验用
 
 ```bash
 # A. 用 adb（手机上需打开「USB 调试」）
-adb install -r slaier-1.1.1.apk
+adb install -r slaier-1.1.2.apk
 ```
 
 **B. 手机上直接点开 APK** —— 把文件传到手机（微信文件传输 / 数据线 / 网盘），点击安装，
@@ -60,8 +60,8 @@ adb install -r slaier-1.1.1.apk
 校验下载是否完整：
 
 ```bash
-shasum -a 256 slaier-1.1.1.apk      # macOS / Linux
-certutil -hashfile slaier-1.1.1.apk SHA256   # Windows
+shasum -a 256 slaier-1.1.2.apk      # macOS / Linux
+certutil -hashfile slaier-1.1.2.apk SHA256   # Windows
 ```
 
 > 系统要求：**Android 8.0（API 26）及以上**，targetSdk 36。
@@ -140,8 +140,8 @@ certutil -hashfile slaier-1.1.1.apk SHA256   # Windows
 |---|---|
 | 每天的「学校判定合格 / 未达标」 | 每日行的 `isQual` |
 | 「合格 / 不合格」 | `stats.isMonthlyQualified` + 学校的 `qualificationMessage` |
-| 「有效打卡 / 应达标 7 / 20 天」 | 分子 = `actualWorkdayPunches + actualRestdayPunches`（工作日 + 周末/节假日照常打卡，对齐网站）；分母 = `requiredPunches` |
-| 「剩余补打卡机会 3 天」 | `stats.maxAllowedRestdayPunches`（学院网站同名数字） |
+| 「有效打卡 / 应达标 7 / 20 天」 | 分子 = `stats.totalValidPunches`（与网站直接取同一字段）；分母 = `requiredPunches` |
+| 「剩余补打卡机会」 | `max(3 - stats.crossWeekUsedPunches, 0)`（与网站公式一致） |
 
 App 自己算的只有时长，口径如下：
 
@@ -155,20 +155,13 @@ App 自己算的只有时长，口径如下：
 - **校外连不上时给的是"回校园网"提示**，不是"你离线了"：设备有网但学校主机不可达
   （`AttendanceRefreshResult.Unreachable`）会显示一张提示卡，因为学生系统在校外常常访问不了。
 
-打卡天数的折算（常量在 `AttendanceWeek.COUNTED_DAYS_PER_WEEK`）：
+考勤统计口径（2026-09-14 核对学校网页“出勤达标规则说明”）：
 
-- 学院口径是**一周 7 天里任意 5 天**，不是"必须工作日"——工作日缺的那天可以用周末补。
-  所以一周最多计 5 天：周标题显示「计入 N/5 天」，超出的合格日在明细里写明「已满 5 天不计入」。
-- 实测支持这个口径：抓到的 2026-09 `stats` 是 `totalWorkdays=20`、`requiredPunches=20`，
-  而该月有 22 个工作日 —— 20 恰好是 4 周 × 5 天。
-
-> **为什么 App 的天数和学院网站会对不上？** 学校 API 的 `actualWorkdayPunches` **只数工作日**，
-> 周末/节假日照常打卡的天数记在 `actualRestdayPunches`。实测某月：工作日 5 天 + 法定节假日 2 天，
-> 学院网站显示「有效打卡 7 天」，而只读前一个字段就会显示 5 —— 两个数都没错，是"只数工作日"与"总数"的区别。
-> App 现在与网站一致：只显示合计（有效打卡 7 天 / 应达标 20 天），`actualWorkdayPunches` 不再单独出现。
->
-> 注意这里的"周末/节假日打卡"和「剩余补打卡机会」**不是一回事**：后者是漏卡后的补录额度
-> （`maxAllowedRestdayPunches`），周末来打卡不会消耗它。
+- 考勤月由完整的周一至周日组成，可能包含上个月末，月底不足一周的日期归入下一个考勤月。
+- 每周应出勤天数按法定节假日和调休确定，普通周通常为 5 天，并非所有周固定 5 天。
+- 同一考勤月内，其他周的额外有效出勤可用于补足缺口，每月最多使用 3 天跨周补充机会，不能跨月使用。
+- 月度有效打卡直接展示学校的 `totalValidPunches`，剩余机会按 `crossWeekUsedPunches` 计算。字段缺失时不自行推算。
+- 周标题仅统计学校每日 `isQual` 判定为合格的天数，不对额外出勤标注“不计入”，也不据此推断最终月度合格结果。
 
 > 学校的每日判定阈值与"6 小时"并不完全一致（实测 `05:35:13` 判合格、`04:29:24` 判不合格），
 > 所以 App 从不替学校推断合格与否：它只展示学校判定，并按你在设置里的目标显示时长进度。

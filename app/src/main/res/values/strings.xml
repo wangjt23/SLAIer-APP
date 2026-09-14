@@ -212,8 +212,7 @@
     <string name="attendance_effective_progress">有效打卡 / 应达标</string>
     <string name="attendance_restday_left">剩余补打卡机会</string>
     <string name="attendance_days_value_short">%1$d 天</string>
-    <string name="attendance_week_counted">计入 %1$d/%2$d 天</string>
-    <string name="attendance_school_ok_not_counted">学校判定合格 · 已满 5 天不计入</string>
+    <string name="attendance_week_qualified">判定合格 %1$d 天</string>
     <string name="attendance_days_count">%1$d 天</string>
     <string name="attendance_times_count">%1$d 次</string>
     <string name="attendance_school_record">学校记录 %1$s</string>
@@ -222,7 +221,7 @@
     <string name="attendance_first_in">首次进闸</string>
     <string name="attendance_last_out">最后出闸</string>
     <string name="attendance_swipe_counts">进出次数</string>
-    <string name="attendance_school_ok">学校判定合格</string>
+    <string name="attendance_school_ok">判定合格</string>
     <string name="attendance_school_fail">学校判定未达标</string>
     <string name="attendance_reading">正在读取考勤记录…</string>
     <string name="attendance_empty">本月还没有考勤数据</string>

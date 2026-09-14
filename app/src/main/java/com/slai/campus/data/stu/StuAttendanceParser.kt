@@ -111,7 +111,7 @@ object StuAttendanceParser {
         val known = setOf(
             "totalWorkdays", "requiredPunches", "actualWorkdayPunches", "totalValidPunches",
             "maxAllowedRestdayPunches", "actualRestdayPunches", "rawRestdayPunches",
-            "isMonthlyQualified", "qualificationMessage"
+            "isMonthlyQualified", "qualificationMessage", "crossWeekUsedPunches"
         )
         return AttendanceStats(
             totalWorkdays = int("totalWorkdays"),
@@ -120,6 +120,7 @@ object StuAttendanceParser {
             totalValidPunches = int("totalValidPunches"),
             maxAllowedRestdayPunches = int("maxAllowedRestdayPunches"),
             restdayPunches = int("actualRestdayPunches") ?: int("rawRestdayPunches"),
+            crossWeekUsedPunches = int("crossWeekUsedPunches"),
             monthlyQualified = bool("isMonthlyQualified"),
             qualificationMessage = stats["qualificationMessage"],
             extra = stats.filterKeys { it !in known }

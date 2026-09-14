@@ -219,8 +219,7 @@
     <string name="attendance_restday_left">Make-up chances left</string>
     <string name="attendance_days_value">%1$d / %2$d days</string>
     <string name="attendance_days_value_short">%1$d days</string>
-    <string name="attendance_week_counted">Counted %1$d/%2$d</string>
-    <string name="attendance_school_ok_not_counted">Qualified — past the 5-day weekly cap</string>
+    <string name="attendance_week_qualified">Qualified: %1$d days</string>
     <string name="attendance_days_count">%1$d days</string>
     <string name="attendance_times_count">%1$d</string>
     <string name="attendance_school_record">School record %1$s</string>
@@ -229,7 +228,7 @@
     <string name="attendance_first_in">First entry</string>
     <string name="attendance_last_out">Last exit</string>
     <string name="attendance_swipe_counts">Entries / exits</string>
-    <string name="attendance_school_ok">School: qualified</string>
+    <string name="attendance_school_ok">Qualified</string>
     <string name="attendance_school_fail">School: not qualified</string>
     <string name="attendance_reading">Reading attendance…</string>
     <string name="attendance_empty">No attendance data this month</string>
