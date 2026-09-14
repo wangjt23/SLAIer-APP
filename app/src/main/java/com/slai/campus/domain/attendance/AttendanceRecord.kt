@@ -63,8 +63,13 @@ data class AttendanceRecord(
             return durationMinutes?.takeIf { it >= 0 }
         }
 
-    /** Historical totals come from school; today's unsettled total can use live gate records. */
+    /** Leave days use physical stays only; other historical totals retain the school's priority. */
     fun displayMinutes(punchDay: DailyAttendance?, now: java.time.LocalDateTime): Int? {
+        if (leave == true) {
+            return punchDay?.takeIf { day ->
+                day.sessions.any { it.to != null || it.isStillOpenAt(now) }
+            }?.minutesAt(now)
+        }
         val reported = reportedMinutes
         if (date.isBefore(now.toLocalDate()) && reported != null) return reported
         if (punchDay != null && punchDay.punches.isNotEmpty()) return punchDay.minutesAt(now)

@@ -6,7 +6,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Android%208.0%2B-3DDC84">
   <img alt="kotlin" src="https://img.shields.io/badge/Kotlin-2.2-7F52FF">
   <img alt="compose" src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4">
-  <img alt="tests" src="https://img.shields.io/badge/tests-235%20passing-success">
+  <img alt="tests" src="https://img.shields.io/badge/tests-244%20passing-success">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -41,7 +41,7 @@
 **推荐：从 [Releases](../../releases) 下载 APK。**
 
 ```text
-slaier-1.1.3.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
+slaier-1.1.4.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
 SHA256SUMS.txt         校验用
 ```
 
@@ -49,7 +49,7 @@ SHA256SUMS.txt         校验用
 
 ```bash
 # A. 用 adb（手机上需打开「USB 调试」）
-adb install -r slaier-1.1.3.apk
+adb install -r slaier-1.1.4.apk
 ```
 
 **B. 手机上直接点开 APK** —— 把文件传到手机（微信文件传输 / 数据线 / 网盘），点击安装，
@@ -60,8 +60,8 @@ adb install -r slaier-1.1.3.apk
 校验下载是否完整：
 
 ```bash
-shasum -a 256 slaier-1.1.3.apk      # macOS / Linux
-certutil -hashfile slaier-1.1.3.apk SHA256   # Windows
+shasum -a 256 slaier-1.1.4.apk      # macOS / Linux
+certutil -hashfile slaier-1.1.4.apk SHA256   # Windows
 ```
 
 > 系统要求：**Android 8.0（API 26）及以上**，targetSdk 36。
@@ -143,13 +143,14 @@ certutil -hashfile slaier-1.1.3.apk SHA256   # Windows
 | 「有效打卡 / 应达标 7 / 20 天」 | 分子 = `stats.totalValidPunches`（与网站直接取同一字段）；分母 = `requiredPunches` |
 | 「剩余补打卡机会」 | `max(3 - stats.crossWeekUsedPunches, 0)`（与网站公式一致） |
 
-历史日期优先显示学校返回的累计时长；当天未结算时使用本地实时估算，口径如下：
+请假日只显示实际进出累计时长；非请假日的历史记录优先显示学校累计时长，当天未结算时使用本地实时估算，口径如下：
 
+- **请假日时长**：以学校返回的 `isLeave` 标记识别，只累计实际进出区间，不使用可能含请假折算的统计时长兜底；没有可用区间时显示“暂无进出记录”。合格判定与有效打卡天数仍取学校结果。
 - **当天时长由闸机流水自己配对累加**，不是"最后出闸 − 首次进闸"——先按完整时间排序并跨午夜配对，再归入进门日期；累计秒数后统一换算成分钟。
 - **只统计教学楼闸机**。`swipeType` 有 `教学楼` 和 `宿舍楼` 两种，把宿舍也算进去会多出通勤时间。
   实测只算教学楼时，每天分钟数与学校自己的数字**逐条吻合到秒**
   （9/1 539 分 = 08:59:11、9/7 646 分 = 10:46:35 …）。
-- **未匹配出门的本地估算有截止时间**：次日 05:00 后未闭合区间不再计入本地估算，避免无限累计；这不代替学校的考勤判定，历史累计时长仍以学校返回值为准。
+- **未匹配出门的本地估算有截止时间**：次日 05:00 后未闭合区间不再计入本地估算，避免无限累计；这不代替学校的考勤判定；非请假日历史累计时长仍以学校返回值为准，请假日仅统计可用进出区间。
 - **闸机记录有几分钟延时**：刷脸出闸后马上看，这里可能仍显示「在馆中」并在继续计时 ——
   考勤页有一行常驻提示说明这一点。
 - **校外连不上时给的是"回校园网"提示**，不是"你离线了"：设备有网但学校主机不可达

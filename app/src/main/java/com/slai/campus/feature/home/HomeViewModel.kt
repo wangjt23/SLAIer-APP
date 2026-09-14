@@ -49,6 +49,9 @@ data class HomeUiState(
      */
     val attendanceMinutes: Int?
         get() {
+            attendance?.takeIf { it.leave == true }?.let {
+                return it.displayMinutes(attendanceDaily, nowDateTime)
+            }
             val daily = attendanceDaily
             if (daily != null && daily.punches.isNotEmpty()) return daily.minutesAt(nowDateTime)
             return attendance?.checkedInMinutes(nowDateTime.toLocalTime())

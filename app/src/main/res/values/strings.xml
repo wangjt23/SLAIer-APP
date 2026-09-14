@@ -260,4 +260,6 @@
     <string name="schedule_cache_hint">课表缓存在本机，需要更新时再手动刷新。</string>
     <string name="schedule_login_to_refresh">更新课表需要登录（缓存仍可查看）</string>
     <string name="attendance_unpaired_history_hint">部分进出记录未配对，累计时长以学校统计为准</string>
+    <string name="attendance_no_entry_records">暂无进出记录</string>
+    <string name="attendance_unpaired_leave_hint">部分进出记录未配对，时长仅按可用进出记录累计</string>
 </resources>

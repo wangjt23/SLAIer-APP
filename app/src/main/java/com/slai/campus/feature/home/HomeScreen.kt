@@ -341,6 +341,7 @@ private fun AttendanceCard(
 
             Text(
                 text = when {
+                    minutes == null && record?.leave == true -> stringResource(R.string.attendance_no_entry_records)
                     minutes == null -> stringResource(R.string.home_no_swipe_hint)
                     remaining == null -> stringResource(R.string.home_no_duration)
                     remaining == 0 -> stringResource(R.string.attendance_goal_reached)

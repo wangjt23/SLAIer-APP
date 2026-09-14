@@ -267,4 +267,6 @@
     <string name="schedule_cache_hint">Your timetable is cached on this device. Refresh manually when needed.</string>
     <string name="schedule_login_to_refresh">Sign in to update; cached classes remain available</string>
     <string name="attendance_unpaired_history_hint">Some entry and exit records could not be paired. The total uses the school record.</string>
+    <string name="attendance_no_entry_records">No entry/exit records available</string>
+    <string name="attendance_unpaired_leave_hint">Some records could not be paired. The total uses available entry/exit records only.</string>
 </resources>

@@ -276,7 +276,7 @@ private fun MonthSummaryCard(state: AttendanceUiState) {
             val swiped = state.days.count { it.hasSwipes }
             if (swiped > 0) {
                 Text(
-                    text = "本月有记录 $swiped 天（合计 ${AttendanceRecord.formatMinutes(state.days.sumOf { it.checkedInMinutes() ?: 0 }, state.locale)}）",
+                    text = "本月有记录 $swiped 天（合计 ${AttendanceRecord.formatMinutes(state.days.sumOf { it.displayMinutes(state.punchDay(it.date), state.nowDateTime) ?: 0 }, state.locale)}）",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -372,8 +372,12 @@ private fun TodayCard(state: AttendanceUiState) {
             // The number the user actually cares about: accumulated check-in time today.
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = state.todayMinutesText ?: "0 分钟",
-                    style = MaterialTheme.typography.displaySmall,
+                    text = state.todayMinutesText ?: if (today?.leave == true) {
+                        stringResource(R.string.attendance_no_entry_records)
+                    } else "0 分钟",
+                    style = if (today?.leave == true && state.todayMinutes == null) {
+                        MaterialTheme.typography.titleMedium
+                    } else MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
@@ -403,7 +407,7 @@ private fun TodayCard(state: AttendanceUiState) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                today?.durationText?.let {
+                today?.takeUnless { it.leave == true }?.durationText?.let {
                     Text(
                         text = stringResource(R.string.attendance_school_record, it),
                         style = MaterialTheme.typography.labelSmall,
@@ -545,7 +549,7 @@ private fun SwipeCell(
  * but `weekGroupedByMonth` returns those **empty for every day** on this deployment (verified), so
  * the card said 「无刷卡记录」 right next to the school's own 「在馆 10:23:57」, which reads as a
  * contradiction. The real in/out times live in the 闸机流水 (`listData`) and are paired by
- * `PunchPairing`. Historical headline totals use the school's reported duration.
+ * `PunchPairing`. Leave-day totals use those physical stays; other historical totals use school data.
  */
 @Composable
 private fun DayCard(
@@ -591,6 +595,7 @@ private fun DayCard(
                         val more = if (punchDay.sessions.size > shown.size) " 等 ${punchDay.sessions.size} 段" else ""
                         if (range.isNotBlank()) add("$range$more")
                     }
+                    record.leave == true -> Unit
                     record.firstSwipe != null || record.lastSwipe != null -> add(record.swipeRange)
                     record.durationText != null && record.durationText != "0" ->
                         add(stringResource(R.string.attendance_inside_school, record.durationText))
@@ -611,10 +616,11 @@ private fun DayCard(
             if (discarded) {
                 Text(
                     text = stringResource(
-                        if (record.date.isBefore(now.toLocalDate()) && record.reportedMinutes != null) {
-                            R.string.attendance_unpaired_history_hint
-                        } else {
-                            R.string.attendance_discarded_hint
+                        when {
+                            record.leave == true -> R.string.attendance_unpaired_leave_hint
+                            record.date.isBefore(now.toLocalDate()) && record.reportedMinutes != null ->
+                                R.string.attendance_unpaired_history_hint
+                            else -> R.string.attendance_discarded_hint
                         }
                     ),
                     style = MaterialTheme.typography.labelSmall,
@@ -625,7 +631,7 @@ private fun DayCard(
     }
 }
 
-/** Historical totals match school; only unsettled live totals are estimated from gate records. */
+/** Leave days show physical stays; non-leave historical totals use the school record. */
 @Composable
 private fun dayHeadline(
     record: AttendanceRecord,
@@ -634,7 +640,9 @@ private fun dayHeadline(
 ): String {
     val minutes = record.displayMinutes(punchDay, now)
     return when {
-        minutes != null && minutes > 0 -> AttendanceRecord.formatMinutes(minutes, currentLocale())
+        record.leave == true && minutes == null -> stringResource(R.string.attendance_no_entry_records)
+        minutes != null && (minutes > 0 || record.leave == true) ->
+            AttendanceRecord.formatMinutes(minutes, currentLocale())
         record.date == now.toLocalDate() && punchDay?.currentlyInsideAt(now) == true ->
             stringResource(R.string.attendance_inside)
         record.dayType == "周末" || record.dayType == "节假日" -> stringResource(R.string.attendance_rest_day)

@@ -65,6 +65,9 @@ data class AttendanceUiState(
      */
     val todayMinutes: Int?
         get() {
+            today?.takeIf { it.leave == true }?.let {
+                return it.displayMinutes(todayDaily, nowDateTime)
+            }
             val fromPunches = todayDaily?.takeIf { it.punches.isNotEmpty() }
             if (fromPunches != null) return fromPunches.minutesAt(nowDateTime)
             return today?.checkedInMinutes(now)
