@@ -161,7 +161,6 @@ fun AttendanceScreen(
                                     record = record,
                                     isToday = record.date == state.todayDate,
                                     punchDay = state.punchDay(record.date),
-                                    punchMinutes = state.punchMinutes(record.date),
                                     discarded = state.hasDiscarded(record.date),
                                     now = state.nowDateTime,
                                     formatter = dayFormatter
@@ -175,7 +174,6 @@ fun AttendanceScreen(
                                         record = record,
                                         isToday = record.date == state.todayDate,
                                         punchDay = state.punchDay(record.date),
-                                        punchMinutes = state.punchMinutes(record.date),
                                         discarded = state.hasDiscarded(record.date),
                                         now = state.nowDateTime,
                                         formatter = dayFormatter
@@ -435,15 +433,15 @@ private fun TodayCard(state: AttendanceUiState) {
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Icon(
-                                        if (session.isOpen) Icons.Default.Login else Icons.Default.Logout,
+                                        if (session.isStillOpenAt(state.nowDateTime)) Icons.Default.Login else Icons.Default.Logout,
                                         contentDescription = null,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = session.textAt(state.nowDateTime),
+                                        text = session.textAt(state.nowDateTime, state.locale),
                                         style = MaterialTheme.typography.bodySmall
                                     )
-                                    if (session.isOpen) {
+                                    if (session.isStillOpenAt(state.nowDateTime)) {
                                         Text(
                                             text = "在馆中",
                                             style = MaterialTheme.typography.labelSmall,
@@ -547,18 +545,18 @@ private fun SwipeCell(
  * but `weekGroupedByMonth` returns those **empty for every day** on this deployment (verified), so
  * the card said 「无刷卡记录」 right next to the school's own 「在馆 10:23:57」, which reads as a
  * contradiction. The real in/out times live in the 闸机流水 (`listData`) and are paired by
- * `PunchPairing`, so the headline now comes from there and only falls back to the school's fields.
+ * `PunchPairing`. Historical headline totals use the school's reported duration.
  */
 @Composable
 private fun DayCard(
     record: AttendanceRecord,
     isToday: Boolean,
     punchDay: DailyAttendance?,
-    punchMinutes: Int?,
     discarded: Boolean,
     now: java.time.LocalDateTime,
     formatter: DateTimeFormatter
 ) {
+    val locale = currentLocale()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(
@@ -577,7 +575,7 @@ private fun DayCard(
                     }
                 }
                 Text(
-                    text = dayHeadline(record, punchDay, punchMinutes, now),
+                    text = dayHeadline(record, punchDay, now),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -589,14 +587,7 @@ private fun DayCard(
                 when {
                     punchDay != null -> {
                         val shown = punchDay.sessions.take(4)
-                        val range = shown.joinToString("，") { session ->
-                            if (session.isOpen) {
-                                "${session.from.toLocalTime().format(AttendanceRecord.HH_MM)} → 在馆中"
-                            } else {
-                                "${session.from.toLocalTime().format(AttendanceRecord.HH_MM)} → " +
-                                    "${session.to!!.toLocalTime().format(AttendanceRecord.HH_MM)}"
-                            }
-                        }
+                        val range = shown.joinToString("，") { session -> session.textAt(now, locale) }
                         val more = if (punchDay.sessions.size > shown.size) " 等 ${punchDay.sessions.size} 段" else ""
                         if (range.isNotBlank()) add("$range$more")
                     }
@@ -619,35 +610,36 @@ private fun DayCard(
              */
             if (discarded) {
                 Text(
-                    text = stringResource(R.string.attendance_discarded_hint),
+                    text = stringResource(
+                        if (record.date.isBefore(now.toLocalDate()) && record.reportedMinutes != null) {
+                            R.string.attendance_unpaired_history_hint
+                        } else {
+                            R.string.attendance_discarded_hint
+                        }
+                    ),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
     }
 }
 
-/**
- * 一天最该看的那个数字：当天累计在馆时长。
- *
- * 今天用闸机流水实时算（学校的当日值恒为 0，未结算）；过去的日子两者一致，优先用流水 ——
- * 实测两者逐条吻合（9/1 539 分 = 08:59:11 …），只有 9/7 因为宿舍楼闸机而不同，见 [PunchPairing]。
- */
+/** Historical totals match school; only unsettled live totals are estimated from gate records. */
 @Composable
 private fun dayHeadline(
     record: AttendanceRecord,
     punchDay: DailyAttendance?,
-    punchMinutes: Int?,
     now: java.time.LocalDateTime
-): String = when {
-    punchMinutes != null && punchMinutes > 0 -> AttendanceRecord.formatMinutes(punchMinutes, currentLocale())
-    punchDay != null && punchDay.currentlyInsideAt(now) -> stringResource(R.string.attendance_inside)
-    !record.durationText.isNullOrBlank() && record.durationText != "0" ->
-        stringResource(R.string.attendance_inside_school, record.durationText!!)
-    // dayType 是学校返回的中文值（协议数据，不能翻译），这里只翻译显示出来的文案。
-    record.dayType == "周末" || record.dayType == "节假日" -> stringResource(R.string.attendance_rest_day)
-    else -> stringResource(R.string.attendance_none)
+): String {
+    val minutes = record.displayMinutes(punchDay, now)
+    return when {
+        minutes != null && minutes > 0 -> AttendanceRecord.formatMinutes(minutes, currentLocale())
+        record.date == now.toLocalDate() && punchDay?.currentlyInsideAt(now) == true ->
+            stringResource(R.string.attendance_inside)
+        record.dayType == "周末" || record.dayType == "节假日" -> stringResource(R.string.attendance_rest_day)
+        else -> stringResource(R.string.attendance_none)
+    }
 }
 
 @Composable

@@ -18,3 +18,7 @@ suspend fun AttendanceRepository.refreshWithPunches(
         else -> summary
     }
 }
+
+/** Include boundary context for overnight stays, even at a month boundary. */
+fun monthPunchRange(month: java.time.YearMonth): Pair<LocalDate, LocalDate> =
+    month.atDay(1).minusDays(8) to month.plusMonths(1).atDay(1)

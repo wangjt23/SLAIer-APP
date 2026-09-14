@@ -63,26 +63,32 @@ data class PunchSession(
     val isOpen: Boolean get() = to == null
 
     /** 到 [now] 为止还算是"在馆中"（未闭合，且还没到作废时刻）。 */
-    fun isStillOpenAt(now: LocalDateTime): Boolean = to == null && now.isBefore(expiresAt)
+    fun isStillOpenAt(now: LocalDateTime): Boolean = to == null && !now.isBefore(from) && now.isBefore(expiresAt)
 
     /** 因为"进了没出"而被判作废。 */
     fun isDiscardedAt(now: LocalDateTime): Boolean = to == null && !now.isBefore(expiresAt)
 
-    fun minutesAt(now: LocalDateTime): Int {
+    fun secondsAt(now: LocalDateTime): Long {
         val end = to ?: run {
             // 过了次日 05:00 仍未出门 → 这一段整段作废。
             if (!now.isBefore(expiresAt)) return 0
             now
         }
-        val minutes = ChronoUnit.MINUTES.between(from, end)
-        return if (minutes > 0) minutes.toInt() else 0
+        return ChronoUnit.SECONDS.between(from, end).coerceAtLeast(0)
     }
 
-    fun textAt(now: LocalDateTime): String {
+    fun minutesAt(now: LocalDateTime): Int = (secondsAt(now) / 60).toInt()
+
+    fun textAt(now: LocalDateTime, locale: java.util.Locale = java.util.Locale.getDefault()): String {
+        val chinese = locale.language.startsWith("zh")
         val start = from.toLocalTime().format(AttendanceRecord.HH_MM)
-        if (isDiscardedAt(now)) return "$start → 未刷卡出门（作废）"
-        val end = (to ?: now).toLocalTime().format(AttendanceRecord.HH_MM)
-        return "$start → $end"
+        if (isDiscardedAt(now)) return "$start → " + if (chinese) "未匹配出门" else "Exit not matched"
+        if (isStillOpenAt(now)) return "$start → " + if (chinese) "在馆中" else "On site"
+        val end = to ?: return "$start → —"
+        val nextDay = if (end.toLocalDate() != from.toLocalDate()) {
+            if (chinese) "次日 " else "Next day "
+        } else ""
+        return "$start → $nextDay${end.toLocalTime().format(AttendanceRecord.HH_MM)}"
     }
 
     companion object {
@@ -98,7 +104,7 @@ data class DailyAttendance(
     val punches: List<AttendancePunch> = emptyList()
 ) {
     /** 累计在馆分钟数；仍在馆内的那一段按 [now] 计算，作废的那段算 0。 */
-    fun minutesAt(now: LocalDateTime): Int = sessions.sumOf { it.minutesAt(now) }
+    fun minutesAt(now: LocalDateTime): Int = (sessions.sumOf { it.secondsAt(now) } / 60).toInt()
 
     fun textAt(now: LocalDateTime, locale: java.util.Locale = java.util.Locale.getDefault()): String =
         AttendanceRecord.formatMinutes(minutesAt(now), locale)
@@ -159,40 +165,48 @@ object PunchPairing {
     fun teachingBuildingOnly(punches: List<AttendancePunch>): List<AttendancePunch> =
         punches.filter { it.place?.trim() != DORMITORY }
 
-    fun daily(punches: List<AttendancePunch>, now: LocalDateTime): Map<LocalDate, DailyAttendance> =
-        teachingBuildingOnly(punches).groupBy { it.date }.mapValues { (date, dayPunches) -> of(date, dayPunches, now) }
-
-    fun of(date: LocalDate, dayPunches: List<AttendancePunch>, now: LocalDateTime): DailyAttendance {
-        val ordered = dedupe(teachingBuildingOnly(dayPunches))
-        val sessions = mutableListOf<PunchSession>()
+    /** Pair across calendar dates, then assign each stay (including its exit) to the entry date. */
+    fun daily(punches: List<AttendancePunch>, now: LocalDateTime): Map<LocalDate, DailyAttendance> {
+        val ordered = dedupe(teachingBuildingOnly(punches))
+        val byDate = linkedMapOf<LocalDate, MutableList<AttendancePunch>>()
+        val sessions = linkedMapOf<LocalDate, MutableList<PunchSession>>()
         var open: LocalDateTime? = null
 
+        fun save(start: LocalDateTime, end: LocalDateTime?) {
+            sessions.getOrPut(start.toLocalDate()) { mutableListOf() }.add(PunchSession(start, end))
+        }
+
         ordered.forEach { punch ->
-            when (punch.direction) {
-                PunchDirection.IN -> {
-                    // 两次进门之间没有出门：保留较早的那次（人一直在馆内）。
-                    if (open == null) open = punch.time
+            // Do not connect an expired entry to an unrelated exit days later.
+            open?.let { start ->
+                if (punch.time.isAfter(PunchSession(start).expiresAt)) {
+                    save(start, null)
+                    open = null
                 }
+            }
+            val owner = when (punch.direction) {
+                PunchDirection.IN, PunchDirection.OUT -> open?.toLocalDate() ?: punch.date
+                PunchDirection.UNKNOWN -> punch.date
+            }
+            byDate.getOrPut(owner) { mutableListOf() }.add(punch)
+            when (punch.direction) {
+                PunchDirection.IN -> if (open == null) open = punch.time
                 PunchDirection.OUT -> {
-                    val start = open
-                    if (start != null) {
-                        sessions += PunchSession(start, punch.time)
-                        open = null
-                    }
-                    // 没有对应进门的出门：忽略（可能是别的门或数据缺边）。
+                    open?.let { save(it, punch.time) }
+                    open = null
                 }
                 PunchDirection.UNKNOWN -> Unit
             }
         }
-
-        if (open != null) sessions += PunchSession(open!!, null)
-
-        return DailyAttendance(
-            date = date,
-            sessions = sessions,
-            punches = ordered
-        )
+        open?.let { save(it, null) }
+        return byDate.mapValues { (date, records) ->
+            DailyAttendance(date, sessions[date].orEmpty(), records)
+        }
     }
+
+    /** [punches] may include adjacent dates so an after-midnight exit can close the requested day. */
+    fun of(date: LocalDate, punches: List<AttendancePunch>, now: LocalDateTime): DailyAttendance =
+        daily(punches, now)[date] ?: DailyAttendance(date)
 
     /** 同秒同方向只保留一条；同秒一进一出都保留（它们是不同事件）。 */
     private fun dedupe(punches: List<AttendancePunch>): List<AttendancePunch> =

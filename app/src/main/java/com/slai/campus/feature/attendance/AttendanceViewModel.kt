@@ -15,6 +15,7 @@ import com.slai.campus.domain.attendance.DailyAttendance
 import com.slai.campus.domain.attendance.PunchPairing
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
 import com.slai.campus.domain.attendance.refreshWithPunches
+import com.slai.campus.domain.attendance.monthPunchRange
 import com.slai.campus.domain.attendance.AttendanceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,13 +97,6 @@ data class AttendanceUiState(
 
     val days: List<AttendanceRecord> get() = monthData.records
 
-    /** 某一天由流水算出的累计分钟数（今天按 [nowDateTime] 把未闭合的一段算进去）。 */
-    fun punchMinutes(date: LocalDate): Int? {
-        val d = daily[date] ?: return null
-        if (d.punches.isEmpty()) return null
-        return d.minutesAt(nowDateTime)
-    }
-
     fun punchDay(date: LocalDate): DailyAttendance? = daily[date]?.takeIf { it.punches.isNotEmpty() }
 
     /** 这一天是否有已作废的"进了没出"。 */
@@ -152,19 +146,15 @@ class AttendanceViewModel @Inject constructor(
     )
 
     // kotlinx combine() has typed overloads only up to 5 flows, so the pieces are folded together.
-    private val todayPunches = timeProvider.observeDate().flatMapLatest { repository.observePunches(it) }
+    private val todayPunches = timeProvider.observeDate().flatMapLatest { repository.observePunches(it.minusDays(1), it) }
 
     /**
      * 明细里出现的第一天可能属于上个月 —— 学校按**教学周**分组，2026-09 的第 1 周就是
      * 08-31 ~ 09-06 —— 所以闸机流水必须覆盖"上个月最后一周 ~ 本月最后一天"。
      * 只查日历月会把 08-31 整个漏掉，那一天就永远显示"无刷卡记录"（实测 08-31 有 4 条流水）。
      */
-    private fun punchSpanFor(monthKey: String): Pair<LocalDate, LocalDate> {
-        val year = monthKey.substringBefore('-').toIntOrNull() ?: todayDate.year
-        val m = monthKey.substringAfter('-').take(2).toIntOrNull() ?: todayDate.monthValue
-        val first = LocalDate.of(year, m, 1)
-        return first.minusDays(7) to first.plusMonths(1).minusDays(1)
-    }
+    private fun punchSpanFor(monthKey: String): Pair<LocalDate, LocalDate> =
+        monthPunchRange(java.time.YearMonth.parse(monthKey))
 
     private val monthPunches = month.flatMapLatest { key ->
         val (from, to) = punchSpanFor(key)
@@ -252,7 +242,7 @@ class AttendanceViewModel @Inject constructor(
                 lastResult.value = repository.refreshWithPunches(selectedMonth, from, to)
                 val today = todayDate
                 if (today !in from..to && lastResult.value !is AttendanceRefreshResult.SessionExpired) {
-                    val todayResult = repository.refreshPunches(today, today)
+                    val todayResult = repository.refreshPunches(today.minusDays(1), today)
                     if (!todayResult.isSuccess) lastResult.value = todayResult
                 }
                 clock.value = timeProvider.nowDateTime()

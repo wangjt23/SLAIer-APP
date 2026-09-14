@@ -90,7 +90,7 @@ class HomeViewModel @Inject constructor(
     private val attendanceGoal = sessionStore.attendanceGoalMinutes
     private val clock = MutableStateFlow(timeProvider.nowDateTime())
 
-    private val todayPunches = timeProvider.observeDate().flatMapLatest { attendanceRepository.observePunches(it) }
+    private val todayPunches = timeProvider.observeDate().flatMapLatest { attendanceRepository.observePunches(it.minusDays(1), it) }
 
     /** 打卡流水 + 时钟 + 「首页显示课表」开关；凑在一起只是因为 combine 最多收 5 个流。 */
     private data class LivePart(
@@ -154,7 +154,7 @@ class HomeViewModel @Inject constructor(
             try {
                 val today = timeProvider.today()
                 _attendanceResult.value = attendanceRepository.refreshWithPunches(
-                    com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today), today, today
+                    com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today), today.minusDays(1), today
                 )
                 clock.value = timeProvider.nowDateTime()
             } finally {

@@ -119,7 +119,8 @@ class MainViewModel @Inject constructor(
                         SchoolSystem.STU -> {
                             val today = timeProvider.today()
                             attendanceRepository.refresh(com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today))
-                            attendanceRepository.refreshPunches(today.withDayOfMonth(1).minusDays(7), today.withDayOfMonth(1).plusMonths(1).minusDays(1))
+                            val (from, to) = com.slai.campus.domain.attendance.monthPunchRange(java.time.YearMonth.from(today))
+                            attendanceRepository.refreshPunches(from, to)
                         }
                     }
                 }

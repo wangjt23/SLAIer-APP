@@ -47,6 +47,30 @@ data class AttendanceRecord(
      */
     val isCurrentlyInside: Boolean get() = swipes.size % 2 == 1
 
+    /** School-reported total, including zero. The displayed duration string takes precedence. */
+    val reportedMinutes: Int?
+        get() {
+            if (durationText?.trim() == "0") return 0
+            val parts = durationText?.trim()?.split(':')
+            if (parts != null && parts.size in 2..3) {
+                val hours = parts[0].toIntOrNull()
+                val minutes = parts[1].toIntOrNull()
+                val seconds = if (parts.size == 3) parts[2].toIntOrNull() else 0
+                if (hours != null && hours in 0..10_000 && minutes != null && minutes in 0..59 &&
+                    seconds != null && seconds in 0..59
+                ) return hours * 60 + minutes
+            }
+            return durationMinutes?.takeIf { it >= 0 }
+        }
+
+    /** Historical totals come from school; today's unsettled total can use live gate records. */
+    fun displayMinutes(punchDay: DailyAttendance?, now: java.time.LocalDateTime): Int? {
+        val reported = reportedMinutes
+        if (date.isBefore(now.toLocalDate()) && reported != null) return reported
+        if (punchDay != null && punchDay.punches.isNotEmpty()) return punchDay.minutesAt(now)
+        return checkedInMinutes(if (date == now.toLocalDate()) now.toLocalTime() else null) ?: reported
+    }
+
     /**
      * Minutes actually accumulated today.
      *

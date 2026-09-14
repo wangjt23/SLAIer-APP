@@ -66,9 +66,9 @@ class PunchPairingTest {
 
     @Test
     fun `accumulates only the paired sessions plus the open one`() {
-        // 3:41:18 (221) + 2:59:05 (179) + 0:00:03 (0) = 400 分钟；再加未闭合段 18:42:26 → 21:00 = 137
+        // Sum seconds first: 3:41:18 + 2:59:05 + 0:00:03 + 2:17:34 = 8:58:00.
         val result = daily()
-        assertThat(result.minutesAt(LocalDateTime.parse("2026-09-09T21:00:00"))).isEqualTo(400 + 137)
+        assertThat(result.minutesAt(LocalDateTime.parse("2026-09-09T21:00:00"))).isEqualTo(538)
     }
 
     @Test
@@ -155,7 +155,7 @@ class PunchPairingTest {
         assertThat(d.textAt(now, java.util.Locale.ENGLISH)).isEqualTo("10h 24m")
         assertThat(d.currentlyInsideAt(now)).isFalse()
         assertThat(d.hasDiscardedSessionAt(now)).isTrue()
-        assertThat(d.sessions.last().textAt(now)).isEqualTo("21:03 → 未刷卡出门（作废）")
+        assertThat(d.sessions.last().textAt(now, java.util.Locale.CHINA)).isEqualTo("21:03 → 未匹配出门")
     }
 
     /** 今天刚进门、还没出去的情况不能被误伤。 */
