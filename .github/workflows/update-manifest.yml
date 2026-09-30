@@ -1,0 +1,58 @@
+name: Update manifest
+
+# A tag creates only a draft. The feed changes after the owner publishes a stable Release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-manifest
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: astral-sh/setup-uv@v6
+      - uses: android-actions/setup-android@v3
+      - name: Install APK metadata tool
+        run: sdkmanager --install "build-tools;36.0.0"
+      - name: Read the latest public release and verify its assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/update-assets"
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/latest-release.json"
+          TAG=$(jq -r .tag_name "$RUNNER_TEMP/latest-release.json")
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/update-assets" \
+            --pattern "slaier-${TAG#v}.apk" --pattern SHA256SUMS.txt
+          uv run python tools/build-update-manifest.py --release "$RUNNER_TEMP/latest-release.json" \
+            --assets "$RUNNER_TEMP/update-assets" --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" \
+            --output "$RUNNER_TEMP/update.json"
+      - name: Publish the static feed on the update branch
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-remote --heads origin refs/heads/update)" ]; then
+            git fetch origin update
+            git checkout -B update FETCH_HEAD
+          else
+            git checkout --orphan update
+            git rm -rf --ignore-unmatch .
+          fi
+          cp "$RUNNER_TEMP/update.json" update.json
+          git add update.json
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update manifest from latest published release"
+          git push origin HEAD:refs/heads/update

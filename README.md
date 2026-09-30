@@ -13,7 +13,8 @@
 > SLAIer is an unofficial Android client for the Shenzhen Loop Area
 > Institute's academic and student systems. It logs in through the school's own AD FS page in
 > an embedded WebView, borrows that session to read your timetable and attendance natively,
-> and caches everything locally so it works offline. It never stores passwords, never checks
+> and caches everything locally so it works offline. Optional automatic sign-in encrypts credentials
+> on this device only and fills the school's trusted AD FS page. It never checks
 > in on your behalf, and never talks to any server other than the school's.
 
 ---
@@ -41,7 +42,7 @@
 **推荐：从 [Releases](../../releases) 下载 APK。**
 
 ```text
-slaier-1.1.4.apk       正式版（R8 混淆 + v2/v3 签名，约 2.6 MB）
+slaier-1.2.0.apk       正式版（R8 混淆 + v2/v3 签名，约 2.7 MB）
 SHA256SUMS.txt         校验用
 ```
 
@@ -49,7 +50,7 @@ SHA256SUMS.txt         校验用
 
 ```bash
 # A. 用 adb（手机上需打开「USB 调试」）
-adb install -r slaier-1.1.4.apk
+adb install -r slaier-1.2.0.apk
 ```
 
 **B. 手机上直接点开 APK** —— 把文件传到手机（微信文件传输 / 数据线 / 网盘），点击安装，
@@ -60,8 +61,8 @@ adb install -r slaier-1.1.4.apk
 校验下载是否完整：
 
 ```bash
-shasum -a 256 slaier-1.1.4.apk      # macOS / Linux
-certutil -hashfile slaier-1.1.4.apk SHA256   # Windows
+shasum -a 256 slaier-1.2.0.apk      # macOS / Linux
+certutil -hashfile slaier-1.2.0.apk SHA256   # Windows
 ```
 
 > 系统要求：**Android 8.0（API 26）及以上**，targetSdk 36。
@@ -73,7 +74,7 @@ certutil -hashfile slaier-1.1.4.apk SHA256   # Windows
 ```text
 1. 打开 App → 进入「课表」页
 2. 点登录入口 → 在 App 内嵌页面里完成学校的 AD FS 登录
-   （账号密码只进学校的页面，App 读不到、也不保存）
+   （默认手动登录；可在设置中自愿开启“记住账号并自动登录”，账号密码仅在本机加密保存）
 3. 登录完成后提取课表并缓存，之后首页可直接查看；需要更新时在课表页手动刷新
 4. 切到「考勤」→ 登录学生系统 → 点刷新或下拉刷新获取最新记录
 ```
@@ -87,7 +88,7 @@ certutil -hashfile slaier-1.1.4.apk SHA256   # Windows
 
 **推荐：在 App 里更新**（设置 → 关于 → 检查更新，发现新版本后点「下载并安装」）。
 
-- App 启动时和每天一次会自动检查 GitHub 的 Release（**默认开启**，可在「设置 → 关于」关掉）；
+- App 启动时和每天一次会自动检查静态版本清单（**默认开启**，可在「设置 → 关于」关掉）；清单尚未部署时回退 GitHub Release API；
 - 下载完会先校验：**SHA-256 对 `SHA256SUMS.txt`** + **包内 versionCode 是否更大** +
   **签名是否与本机版本一致** —— 三层都过才会交给系统安装器；
 - 系统会弹一次安装确认（首次需要允许本 App「安装未知应用」），装上后重启 App 即生效；
@@ -184,11 +185,11 @@ certutil -hashfile slaier-1.1.4.apk SHA256   # Windows
 
 ## 4. 这个 App 是怎么连上学校系统的
 
-不猜、不绕、不代填：
+通过学校统一认证登录：
 
 ```text
 登录  ──  内嵌 WebView 打开学校自己的 AD FS 页面，用户手动完成认证
-          （App 不读、不存、不代填任何账号密码）
+          （默认手动登录；自愿保存后，仅在学校统一认证页自动填入）
    ↓
 会话  ──  WebView 的 Cookie 是唯一凭据。OkHttp 按 URL 借用（CookieManager.getCookie）
    ↓
@@ -287,7 +288,7 @@ sdk.dir=/path/to/Android/sdk
 # Release 版（未配置签名时自动回退到 debug 签名，仍可安装）
 ./gradlew :app:assembleRelease
 
-# 单元测试（202 个用例，全部不依赖 Android 框架）
+# 单元测试（256 个用例，全部不依赖 Android 框架；登录脚本测试另需 Node.js）
 ./gradlew :app:testDebugUnitTest
 ```
 
@@ -322,7 +323,7 @@ python3 tools/make-assets.py
 | 文件访问          | `allowFileAccess=false`、`allowContentAccess=false`                                                                        |
 | JavaScript Bridge | **不注册任何 `addJavascriptInterface`**；提取脚本把结果写进页面全局变量，原生用 `evaluateJavascript` 读回            |
 | 多窗口            | `setSupportMultipleWindows(false)`                                                                                           |
-| 密码              | 不读取、不保存、不代填                                                                                                         |
+| 密码              | 默认不保存；用户自愿开启后用 Android Keystore 密钥加密，存入本机不备份目录，仅在学校 HTTPS 统一认证页自动填入，可关闭或清除 |
 | 第三方服务器      | **没有**。App 只连 `*.slai.edu.cn`，没有任何自建后端                                                                   |
 | 本地存储          | 只存业务数据 + 不可逆账号 hash；`allowBackup=false`，备份规则排除数据库/偏好                                                 |
 | 日志              | Release 关闭详细日志；所有输出过`Redactor`（Cookie / Token / 学号 / 密码打码）                                               |
@@ -330,7 +331,7 @@ python3 tools/make-assets.py
 
 ### 这个 App 不做什么
 
-- ❌ 不保存、不代填、不上传校园账号密码
+- ❌ 不将校园账号密码上传到学校以外的服务器，不把密码写入日志或备份
 - ❌ 不自动打卡、不代替你完成任何考勤动作
 - ❌ 不绕过学校认证（走的是学校自己的 AD FS 页面）
 - ❌ 不搭建任何收集学生信息的第三方服务器
@@ -362,7 +363,7 @@ app/src/main/java/com/slai/campus/
 ```
 
 **分层规则**：`domain` 不依赖 `data`，`data` 不依赖 `feature`；
-解析逻辑全部是纯 Kotlin，**154 个单元测试没有一个依赖 Android 框架** ——
+解析逻辑全部是纯 Kotlin，**256 个单元测试没有一个依赖 Android 框架** ——
 所以那些行为在换平台时依然可验证。
 
 ---

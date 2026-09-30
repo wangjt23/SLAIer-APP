@@ -56,8 +56,34 @@ class SettingsViewModel @Inject constructor(
     private val cookieBridge: WebCookieBridge,
     private val reminderScheduler: ReminderScheduler,
     private val timeProvider: TimeProvider,
+    private val savedLoginStore: com.slai.campus.core.session.SavedLoginStore,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+    val savedLogin = savedLoginStore.status
+    private val _savedLoginError = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val savedLoginError = _savedLoginError.asStateFlow()
+
+    fun saveLogin(username: String, password: String, onSaved: () -> Unit) {
+        viewModelScope.launch {
+            _savedLoginError.value = false
+            try {
+                savedLoginStore.save(username, password)
+                onSaved()
+            } catch (_: Exception) { _savedLoginError.value = true }
+        }
+    }
+
+    fun setSavedLoginEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            _savedLoginError.value = runCatching { savedLoginStore.setEnabled(enabled) }.isFailure
+        }
+    }
+
+    fun clearSavedLogin() {
+        viewModelScope.launch {
+            _savedLoginError.value = runCatching { savedLoginStore.clear() }.isFailure
+        }
+    }
 
     private data class Core(
         val session: com.slai.campus.core.session.SessionSnapshot,
@@ -147,6 +173,8 @@ class SettingsViewModel @Inject constructor(
 
     fun clearSession(system: SchoolSystem) {
         viewModelScope.launch {
+            // Explicit sign-out must not immediately sign the user back in.
+            savedLoginStore.setEnabled(false)
             sessionManager.signOut(system, cookieBridge)
             if (system == SchoolSystem.SIS) {
                 ScheduleSyncWorker.cancelAll(appContext)

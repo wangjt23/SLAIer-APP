@@ -4,6 +4,9 @@ import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.common.Redactor
 import com.slai.campus.core.common.RemoteResult
 import com.slai.campus.core.network.UpdateClient
+import com.slai.campus.core.session.SessionStore
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import com.slai.campus.domain.update.AppRelease
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,72 +18,42 @@ import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** 一次检查的结果：`result.data == null` 表示 304（本地缓存仍然有效）。 */
-data class ReleaseFetch(
-    val result: RemoteResult<AppRelease?>,
-    val etag: String?
-)
+data class ReleaseFetch(val result: RemoteResult<AppRelease>, val etag: String?)
 
-/**
- * 从 GitHub Releases 读最新版本。
- *
- * 三个刻意的设计：
- *
- *  - 用 `ETag` + `If-None-Match`：命中 304 时不消耗解析、也几乎不消耗带宽；
- *  - **区分 403/429（限流）与其它失败**：未认证 API 是 60 次/小时/IP，校园网出口 NAT 下全班
- *    共用一个 IP，撞上限流非常正常 —— 这时应该安静地等下一次，而不是告诉用户"更新失败"；
- *  - 用**不含学校 cookie 的独立 OkHttp 客户端**（`@UpdateClient`）：往 GitHub 发请求绝不能
- *    带上 WebView 里的教务会话。
- */
+/** Static manifest first. Only a missing feed (404) uses the legacy API during migration. */
 @Singleton
 class GitHubReleaseDataSource @Inject constructor(
-    @UpdateClient private val client: OkHttpClient
+    @UpdateClient private val client: OkHttpClient,
+    private val store: SessionStore
 ) {
-
-    suspend fun fetchLatest(etag: String?): ReleaseFetch = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(LATEST_URL)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .apply { if (!etag.isNullOrBlank()) header("If-None-Match", etag) }
-            .get()
-            .build()
-
+    suspend fun fetchLatest(): ReleaseFetch = withContext(Dispatchers.IO) {
         try {
-            client.newCall(request).execute().use { response ->
-                when {
-                    response.code == 304 -> ReleaseFetch(RemoteResult.Success(null), etag)
-
-                    response.code == 403 || response.code == 429 ->
-                        ReleaseFetch(RemoteResult.ServerError(response.code, "rate limited"), etag)
-
-                    response.isSuccessful -> {
-                        val body = response.body?.string()
-                        val release = ReleaseParser.parse(body)
-                        if (release == null) {
-                            ReleaseFetch(RemoteResult.SchemaChanged("releases/latest 结构不认识"), etag)
-                        } else {
-                            AppLog.i("update check: latest=${release.versionName}")
-                            ReleaseFetch(RemoteResult.Success(release), response.header("ETag"))
-                        }
-                    }
-
-                    else -> ReleaseFetch(
-                        RemoteResult.ServerError(response.code, response.message.ifBlank { null }),
-                        etag
-                    )
-                }
-            }
-        } catch (e: UnknownHostException) {
-            ReleaseFetch(RemoteResult.NetworkUnavailable("DNS 解析失败"), etag)
-        } catch (e: SocketTimeoutException) {
-            ReleaseFetch(RemoteResult.NetworkUnavailable("连接超时"), etag)
+            val manifest = fetch(UpdateManifest.URL, UpdateManifest::parse)
+            if ((manifest.result as? RemoteResult.ServerError)?.code == 404) {
+                fetch(LATEST_URL, ReleaseParser::parse)
+            } else manifest
+        } catch (_: UnknownHostException) {
+            ReleaseFetch(RemoteResult.NetworkUnavailable("DNS 解析失败"), null)
+        } catch (_: SocketTimeoutException) {
+            ReleaseFetch(RemoteResult.NetworkUnavailable("连接超时"), null)
         } catch (e: IOException) {
-            ReleaseFetch(RemoteResult.NetworkUnavailable(e.javaClass.simpleName), etag)
+            ReleaseFetch(RemoteResult.NetworkUnavailable(e.javaClass.simpleName), null)
         } catch (e: Exception) {
             AppLog.e("update check failed: ${e.javaClass.simpleName}")
-            ReleaseFetch(RemoteResult.UnknownError(e.javaClass.simpleName), etag)
+            ReleaseFetch(RemoteResult.UnknownError(e.javaClass.simpleName), null)
         }
+    }
+
+    private suspend fun fetch(url: String, parse: (String?) -> AppRelease?): ReleaseFetch {
+        val (cachedSource, cachedEtag, payload) = store.updateCache()
+        val cached = if (cachedSource == url) runCatching {
+            Json.decodeFromString<AppRelease>(payload.orEmpty())
+        }.getOrNull() else null
+        val fetch = readReleaseFeed(client, url, cached, cachedEtag, parse)
+        (fetch.result as? RemoteResult.Success)?.let {
+            store.setUpdateCache(url, fetch.etag, Json.encodeToString(it.data))
+        }
+        return fetch
     }
 
     /** 纯文本资产（目前只有 `SHA256SUMS.txt`）。失败返回 null，由调用方决定是否硬失败。 */

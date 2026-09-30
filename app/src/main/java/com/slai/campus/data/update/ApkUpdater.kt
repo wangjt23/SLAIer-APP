@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.PackageInstaller
+import android.os.Build
 import android.content.pm.PackageManager.NameNotFoundException
 import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.network.UpdateClient
@@ -121,7 +122,7 @@ sealed interface VerifyOutcome {
  *  3. **签名与本机一致** —— 这是**信任边界**：签名不同的包理论上装不上（系统会拒绝覆盖），
  *     但在这里先比对，才能把"应用未安装"翻译成一句人话。
  *
- * 注意 `getPackageArchiveInfo` 需要 `GET_SIGNING_CERTIFICATES`；minSdk 26 上直接可用。
+ * Android 8 uses the legacy signature and version-code APIs.
  */
 @Singleton
 class ApkVerifier @Inject constructor(
@@ -129,24 +130,23 @@ class ApkVerifier @Inject constructor(
 ) {
 
     fun inspect(file: File): ApkInfo? {
-        val flags = PackageManager.GET_SIGNING_CERTIFICATES
+        val flags = signingFlags()
         val info: PackageInfo = context.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
             ?: return null
         info.applicationInfo?.sourceDir = file.absolutePath
-        val signingInfo = info.signingInfo ?: return null
-        val signers = signingInfo.apkContentsSigners ?: return null
+        val signers = signerHashes(info) ?: return null
         return ApkInfo(
-            versionCode = info.longVersionCode,
+            versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else legacyVersionCode(info),
             versionName = info.versionName,
-            signerHashes = signers.mapNotNull { it.toByteArray().sha256Hex() }.toSet()
+            signerHashes = signers
         )
     }
 
     /** 本机已安装版本的签名（`null` 表示读不到，此时跳过签名比对而不是误判）。 */
     fun installedSignerHashes(): Set<String>? = runCatching {
-        val flags = PackageManager.GET_SIGNING_CERTIFICATES
+        val flags = signingFlags()
         val info = context.packageManager.getPackageInfo(context.packageName, flags)
-        info.signingInfo?.apkContentsSigners?.mapNotNull { it.toByteArray().sha256Hex() }?.toSet()
+        signerHashes(info)
     }.getOrElse { error ->
         if (error is NameNotFoundException) AppLog.w("installed signing info unavailable") else AppLog.w("signing read failed")
         null
@@ -176,7 +176,7 @@ class ApkVerifier @Inject constructor(
         }
 
         val installed = installedSignerHashes()
-        if (installed != null && info.signerHashes.isNotEmpty() && info.signerHashes.none { it in installed }) {
+        if (installed.isNullOrEmpty() || info.signerHashes.isEmpty() || info.signerHashes != installed) {
             return VerifyOutcome.Rejected(
                 com.slai.campus.domain.update.UpdateFailure.SIGNATURE_MISMATCH,
                 "签名与本机版本不一致"
@@ -188,6 +188,18 @@ class ApkVerifier @Inject constructor(
 
     private fun ByteArray.sha256Hex(): String =
         MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { "%02x".format(it) }
+
+    @Suppress("DEPRECATION")
+    private fun signingFlags() = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+
+    @Suppress("DEPRECATION")
+    private fun legacyVersionCode(info: PackageInfo) = info.versionCode.toLong()
+
+    @Suppress("DEPRECATION")
+    private fun signerHashes(info: PackageInfo): Set<String>? {
+        val signers = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures
+        return signers?.map { it.toByteArray().sha256Hex() }?.toSet()
+    }
 }
 
 /** 安装调起失败的原因。 */

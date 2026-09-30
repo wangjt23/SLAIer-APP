@@ -82,6 +82,9 @@ class SessionStore @Inject constructor(
 
         /** GitHub API 的 ETag，命中 304 时不用重新解析整个 payload。 */
         val UPDATE_ETAG = stringPreferencesKey("update_etag")
+        val UPDATE_CACHED_PAYLOAD = stringPreferencesKey("update_cached_payload")
+        val UPDATE_CACHED_SOURCE = stringPreferencesKey("update_cached_source")
+        val UPDATE_LAST_ATTEMPT_AT = longPreferencesKey("update_last_attempt_at")
 
         /** Occurrence ids that currently have a scheduled alarm, so stale ones can be cancelled. */
         val SCHEDULED_REMINDERS = androidx.datastore.preferences.core.stringSetPreferencesKey("scheduled_reminders")
@@ -249,6 +252,24 @@ class SessionStore @Inject constructor(
 
     suspend fun setUpdateEtag(etag: String) {
         context.sessionDataStore.edit { it[Keys.UPDATE_ETAG] = etag }
+    }
+
+    suspend fun updateCache(): Triple<String?, String?, String?> {
+        val prefs = context.sessionDataStore.data.first()
+        return Triple(prefs[Keys.UPDATE_CACHED_SOURCE], prefs[Keys.UPDATE_ETAG], prefs[Keys.UPDATE_CACHED_PAYLOAD])
+    }
+
+    suspend fun setUpdateCache(source: String, etag: String?, payload: String) {
+        context.sessionDataStore.edit {
+            it[Keys.UPDATE_CACHED_SOURCE] = source
+            it[Keys.UPDATE_CACHED_PAYLOAD] = payload
+            if (etag == null) it.remove(Keys.UPDATE_ETAG) else it[Keys.UPDATE_ETAG] = etag
+        }
+    }
+
+    suspend fun updateLastAttemptAt(): Long? = context.sessionDataStore.data.first()[Keys.UPDATE_LAST_ATTEMPT_AT]
+    suspend fun setUpdateLastAttemptAt(at: Long) {
+        context.sessionDataStore.edit { it[Keys.UPDATE_LAST_ATTEMPT_AT] = at }
     }
 
     /**

@@ -112,7 +112,7 @@ Release 签名 → 产出 APK
 
 ## 5. Agent 约束（写代码时必须遵守）
 
-1. 不保存、不代填、不记录任何密码；
+1. 默认不保存密码；用户自愿开启自动登录后，凭据仅以 Android Keystore 加密保存于本机不备份目录，只允许填入学校 HTTPS AD FS 页面，不记录密码、不发送至其他服务器；
 2. 不调用 `handler.proceed()` 忽略 SSL 错误；
 3. 不注册 `addJavascriptInterface`；
 4. 不把 `*.slai.edu.cn` 的 Cookie 全量发给任意子域；

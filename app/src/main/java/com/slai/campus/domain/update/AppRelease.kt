@@ -6,6 +6,7 @@ package com.slai.campus.domain.update
  * 只用得上这几项：版本号（比较）、APK 资产（下载）、`SHA256SUMS.txt`（完整性）、
  * release body（更新说明）。其余字段一律不解析，免得 GitHub 改结构就崩。
  */
+@kotlinx.serialization.Serializable
 data class AppRelease(
     /** 原始 tag，例如 `v1.1.0`。 */
     val tagName: String,
@@ -19,7 +20,9 @@ data class AppRelease(
     val apkName: String? = null,
     val apkSize: Long? = null,
     /** `SHA256SUMS.txt` 资产；有它才做完整性校验。 */
-    val checksumsUrl: String? = null
+    val checksumsUrl: String? = null,
+    val versionCode: Long? = null,
+    val sha256: String? = null
 ) {
     val hasApk: Boolean get() = !apkUrl.isNullOrBlank()
 

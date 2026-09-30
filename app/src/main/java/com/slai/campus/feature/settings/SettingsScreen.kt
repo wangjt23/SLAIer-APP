@@ -44,6 +44,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -64,9 +67,7 @@ import java.time.format.DateTimeFormatter
 /**
  * Settings.
  *
- * Two deliberate omissions: there is no field for a password, and no "remember me". Authentication
- * happens exclusively in the school's own WebView flow; this screen only configures the calendar
- * anchor, reminder behaviour and endpoint overrides.
+ * Saved login is opt-in and remains local to this device.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,6 +78,9 @@ fun SettingsScreen(
     updateViewModel: UpdateViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val savedLogin by viewModel.savedLogin.collectAsStateWithLifecycle()
+    val savedLoginError by viewModel.savedLoginError.collectAsStateWithLifecycle()
+    var showLoginDialog by remember { mutableStateOf(false) }
     val updateState by updateViewModel.state.collectAsStateWithLifecycle()
 
     // 用户可能刚从系统的「安装未知应用」页面返回，回到前台时重新读一次授权状态。
@@ -119,6 +123,28 @@ fun SettingsScreen(
                     state.urls?.stuEntry?.let { navigator.openWeb(it, stuLoginLabel, SchoolSystem.STU, true) }
                 }
             )
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.saved_login_title), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.saved_login_summary), style = MaterialTheme.typography.bodySmall)
+                    if (savedLogin.saved) {
+                        SettingRow(title = stringResource(R.string.saved_login_enable),
+                            summary = stringResource(if (savedLogin.paused) R.string.saved_login_paused else R.string.saved_login_stored)) {
+                            Switch(checked = savedLogin.enabled, onCheckedChange = viewModel::setSavedLoginEnabled)
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { showLoginDialog = true }) {
+                            Text(stringResource(if (savedLogin.saved) R.string.saved_login_change else R.string.saved_login_save))
+                        }
+                        if (savedLogin.saved) TextButton(onClick = viewModel::clearSavedLogin) {
+                            Text(stringResource(R.string.saved_login_clear))
+                        }
+                    }
+                    if (savedLoginError) Text(stringResource(R.string.saved_login_save_error), color = MaterialTheme.colorScheme.error)
+                }
+            }
 
             HorizontalDivider()
 
@@ -340,6 +366,45 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    if (showLoginDialog) {
+        // remember (not rememberSaveable): credentials never enter the instance-state Bundle.
+        var username by remember { mutableStateOf("") }
+        var password by remember { mutableStateOf("") }
+        var saving by remember { mutableStateOf(false) }
+        androidx.compose.runtime.LaunchedEffect(savedLoginError) { if (savedLoginError) saving = false }
+        AlertDialog(
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
+            onDismissRequest = { if (!saving) showLoginDialog = false },
+            title = { Text(stringResource(R.string.saved_login_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.saved_login_consent))
+                    OutlinedTextField(value = username, onValueChange = { username = it },
+                        label = { Text(stringResource(R.string.saved_login_username)) }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), enabled = !saving)
+                    OutlinedTextField(value = password, onValueChange = { password = it },
+                        label = { Text(stringResource(R.string.saved_login_password)) }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), enabled = !saving)
+                    if (savedLoginError) Text(stringResource(R.string.saved_login_save_error), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !saving && username.isNotBlank() && password.isNotEmpty(), onClick = {
+                    saving = true
+                    viewModel.saveLogin(username, password) {
+                        username = ""
+                        password = ""
+                        showLoginDialog = false
+                    }
+                }) { Text(stringResource(R.string.saved_login_save)) }
+            },
+            dismissButton = {
+                TextButton(enabled = !saving, onClick = { showLoginDialog = false }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
     }
 
     if (showAnchorPicker) {

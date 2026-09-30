@@ -93,7 +93,7 @@ class UpdateRepositoryImpl @Inject constructor(
 
     override suspend fun checkIfStale() {
         if (!sessionStore.updateCheckEnabledNow()) return
-        val last = sessionStore.updateLastCheckAt()
+        val last = sessionStore.updateLastAttemptAt() ?: sessionStore.updateLastCheckAt()
         val stale = last == null || System.currentTimeMillis() - last >= UpdateRepository.STALE_AFTER_MILLIS
         if (stale) check(manual = false)
     }
@@ -109,24 +109,16 @@ class UpdateRepositoryImpl @Inject constructor(
         // 都被自己禁用掉（第一次实测就踩到了）。
         val previous = _state.value
         _state.value = UpdateState.Checking
-        val etag = sessionStore.updateEtag()
-        val fetch = dataSource.fetchLatest(etag)
+        sessionStore.setUpdateLastAttemptAt(System.currentTimeMillis())
+        val fetch = dataSource.fetchLatest()
 
         when (val result = fetch.result) {
             is RemoteResult.Success -> {
-                fetch.etag?.let { sessionStore.setUpdateEtag(it) }
                 val checkedAt = System.currentTimeMillis()
                 sessionStore.setUpdateLastCheckAt(checkedAt)
                 _lastCheckedAt.value = checkedAt
 
                 val release = result.data
-                if (release == null) {
-                    // 304：这份 ETag 对应的发布没有变，沿用上一次的结论。
-                    AppLog.i("update check: not modified")
-                    _state.value = UpdateState.UpToDate(checkedAt)
-                    return
-                }
-
                 when (val decision = ReleaseDecision.decide(
                     release = release,
                     currentVersionName = BuildConfig.VERSION_NAME,
@@ -209,16 +201,14 @@ class UpdateRepositoryImpl @Inject constructor(
         _state.value = UpdateState.Verifying
 
         // 校验和文件是可选的：拿不到时退化为"只验版本号与签名"，但会在日志里留下痕迹。
-        val expected = withContext(dispatchers.io) {
+        val expected = release.sha256 ?: withContext(dispatchers.io) {
             release.checksumsUrl
                 ?.let { dataSource.fetchText(it) }
                 ?.let { ChecksumFile.sha256For(fileName, it) }
         }
         if (expected == null) AppLog.w("update: checksums unavailable, skipping integrity check")
 
-        val currentVersionCode = runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
-        }.getOrDefault(BuildConfig.VERSION_CODE.toLong())
+        val currentVersionCode = BuildConfig.VERSION_CODE.toLong()
 
         when (val verdict = verifier.verify(outcome.apk.file, expected, outcome.apk.sha256, currentVersionCode)) {
             VerifyOutcome.Ok -> Unit

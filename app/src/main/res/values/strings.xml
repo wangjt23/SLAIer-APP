@@ -117,7 +117,7 @@
     <string name="update_failed_install">安装失败：%1$s</string>
     <string name="update_failed_unknown">检查更新失败：%1$s</string>
     <string name="update_cancelled">已取消安装</string>
-    <string name="settings_disclaimer">本应用仅为本机浏览与缓存工具，不保存密码、不自动打卡、不绕过学校认证。所有写操作请使用学校原网页。</string>
+    <string name="settings_disclaimer">本应用仅为本机浏览与缓存工具。可自愿开启本机保存账号密码和自动登录；不自动打卡、不绕过学校认证，也不将密码上传到学校以外的服务器。业务写操作请使用学校原网页。</string>
 
     <!-- Common -->
     <string name="cd_back">返回</string>
@@ -262,4 +262,17 @@
     <string name="attendance_unpaired_history_hint">部分进出记录未配对，累计时长以学校统计为准</string>
     <string name="attendance_no_entry_records">暂无进出记录</string>
     <string name="attendance_unpaired_leave_hint">部分进出记录未配对，时长仅按可用进出记录累计</string>
+    <string name="saved_login_title">记住账号并自动登录</string>
+    <string name="saved_login_summary">开启后，登录过期时会尝试重新登录。账号密码加密保存在本机；验证码或二次验证仍需你操作。</string>
+    <string name="saved_login_enable">自动登录</string>
+    <string name="saved_login_stored">已保存到本机</string>
+    <string name="saved_login_paused">自动尝试未确认成功，已暂停。请检查账号密码，或关闭后重新开启。</string>
+    <string name="saved_login_change">修改账号密码</string>
+    <string name="saved_login_save">保存并开启</string>
+    <string name="saved_login_clear">清除账号密码</string>
+    <string name="saved_login_consent">仅在你同意后保存，用于学校统一认证登录。密码不会上传到其他服务器或进入备份。</string>
+    <string name="saved_login_username">邮箱或学号</string>
+    <string name="saved_login_password">密码</string>
+    <string name="saved_login_save_error">无法保存或清除，请重试。</string>
+    <string name="saved_login_manual">本次自动登录未完成，请手动处理验证码或登录。修改账号密码或重新开启自动登录后可再次尝试。</string>
 </resources>

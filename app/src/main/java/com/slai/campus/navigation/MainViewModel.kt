@@ -42,10 +42,28 @@ class MainViewModel @Inject constructor(
     private val captureBus: CaptureBus,
     private val updateRepository: com.slai.campus.domain.update.UpdateRepository,
     private val cookieBridge: com.slai.campus.core.session.WebCookieBridge,
+    val savedLoginStore: com.slai.campus.core.session.SavedLoginStore,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     val session: StateFlow<SessionSnapshot> = sessionManager.state
+    val savedLogin = savedLoginStore.status
+    private var automaticLoginRevision: Long? = null
+
+    /** Do not reopen a dismissed flow during recomposition or an activity recreation. */
+    fun claimAutomaticLogin(): Boolean {
+        val status = savedLogin.value
+        if (!status.canAttempt || automaticLoginRevision == status.revision) return false
+        automaticLoginRevision = status.revision
+        return true
+    }
+
+    suspend fun automaticStuEntry(): String? {
+        val urls = urlProvider.current()
+        // Endpoint overrides do not grant permission to share saved credentials elsewhere.
+        return urls.stuEntry.takeIf { it == "https://stu.slai.edu.cn/sso/login" &&
+            urls.stuBase == "https://stu.slai.edu.cn" }
+    }
 
     /**
      * 规范化后的教务系统地址：站点 / 应用根（`/yjsxt`）/ SSO 入口。
@@ -95,7 +113,7 @@ class MainViewModel @Inject constructor(
      * the session, and on success refresh data for that system.
      * This closes the loop the plan describes in §15.
      */
-    fun onWebPageFinished(url: String, isLoginFlow: Boolean) {
+    fun onWebPageFinished(url: String, isLoginFlow: Boolean, usedSavedLogin: Boolean = false) {
         if (!isLoginFlow) return
         val landed = businessLanding(url) ?: return
         if (_webCompleting.value) return
@@ -110,6 +128,8 @@ class MainViewModel @Inject constructor(
                 val state = sessionManager.probe(landed)
                 AppLog.i("login flow finished for $landed: $state")
                 if (state == SessionState.AUTHENTICATED) {
+                    if (usedSavedLogin) savedLoginStore.loginSucceeded()
+                    automaticLoginRevision = null
                     // 先让 WebView 退场，再刷新对应系统的数据，
                     // 不必等这一轮请求跑完（那可能要好几秒）。
                     _loginCompleted.tryEmit(Unit)

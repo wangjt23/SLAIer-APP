@@ -124,7 +124,7 @@
     <string name="update_failed_install">Install failed: %1$s</string>
     <string name="update_failed_unknown">Update check failed: %1$s</string>
     <string name="update_cancelled">Install cancelled</string>
-    <string name="settings_disclaimer">This app is a local viewer and cache for your own school pages. It never stores passwords, never checks in on your behalf, and never bypasses the school\'s authentication. All write actions must be done on the school\'s own web pages.</string>
+    <string name="settings_disclaimer">This app is a local viewer and cache for your own school pages. You may opt in to saving credentials on this device for automatic sign-in. It never checks in on your behalf, bypasses school authentication, or sends passwords to other servers. Business write actions must be done on the school\'s own web pages.</string>
 
     <!-- Common -->
     <string name="cd_back">Back</string>
@@ -269,4 +269,17 @@
     <string name="attendance_unpaired_history_hint">Some entry and exit records could not be paired. The total uses the school record.</string>
     <string name="attendance_no_entry_records">No entry/exit records available</string>
     <string name="attendance_unpaired_leave_hint">Some records could not be paired. The total uses available entry/exit records only.</string>
+    <string name="saved_login_title">Remember account and sign in automatically</string>
+    <string name="saved_login_summary">Try signing in when your session expires. Credentials are encrypted on this device. Captchas or additional verification still need your attention.</string>
+    <string name="saved_login_enable">Automatic sign-in</string>
+    <string name="saved_login_stored">Saved on this device</string>
+    <string name="saved_login_paused">Automatic sign-in was not confirmed and is paused. Check your credentials, or turn this off and on to retry.</string>
+    <string name="saved_login_change">Change credentials</string>
+    <string name="saved_login_save">Save and enable</string>
+    <string name="saved_login_clear">Clear credentials</string>
+    <string name="saved_login_consent">Save only with your consent, for the school sign-in page. Your password is never sent to other servers or included in backups.</string>
+    <string name="saved_login_username">Email or student ID</string>
+    <string name="saved_login_password">Password</string>
+    <string name="saved_login_save_error">Could not save or clear. Please try again.</string>
+    <string name="saved_login_manual">Automatic sign-in could not finish. Complete the captcha or sign in manually. Update your credentials or re-enable automatic sign-in to retry.</string>
 </resources>

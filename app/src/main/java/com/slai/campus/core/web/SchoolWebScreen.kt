@@ -50,13 +50,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.slai.campus.R
 import com.slai.campus.core.common.AppLog
+import com.slai.campus.core.session.SavedLoginStore
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  * The WebView container.
  *
  * Scope, per the design plan: this is the **authentication and web-fallback layer**, not the app.
- * It opens the school's own login flow and its own pages; it never stores a password, never fills
- * one in, and never exposes a JavaScript bridge.
+ * Optional saved credentials only enter the school's trusted AD FS login form.
+ * No JavaScript bridge is exposed.
  *
  * Routing rules:
  *  - school host, https            -> loaded here;
@@ -70,7 +73,7 @@ fun SchoolWebScreen(
     initialUrl: String,
     title: String,
     onClose: () -> Unit,
-    onPageFinished: (url: String) -> Unit = {},
+    onPageFinished: (url: String, usedSavedLogin: Boolean) -> Unit = { _, _ -> },
     onUrlChanged: (url: String) -> Unit = {},
     /**
      * When true the capture hook is installed into every page, so the requests the school's own
@@ -83,13 +86,17 @@ fun SchoolWebScreen(
      * 顶部一行说明文字（可选）。登录流程用它提前告诉用户"成功后会自动返回"，
      * 免得用户输完密码后不知道该不该关掉这个页面。
      */
-    hint: String? = null
+    hint: String? = null,
+    savedLoginStore: SavedLoginStore? = null
 ) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
     var progress by remember { mutableIntStateOf(0) }
+    var pageGeneration by remember { mutableIntStateOf(0) }
     var currentUrl by remember { mutableStateOf(initialUrl) }
     var sslError by remember { mutableStateOf<String?>(null) }
+    val loginAttempt = remember { SchoolLoginAttempt() }
+    var loginNeedsManual by remember { mutableStateOf(false) }
     var captureCount by remember { mutableIntStateOf(0) }
     // shouldInterceptRequest is called on a background thread for every frame, so the list is
     // synchronised rather than a Compose state.
@@ -98,6 +105,46 @@ fun SchoolWebScreen(
     // than written straight into Compose state.
     val interceptedCount = remember { java.util.concurrent.atomic.AtomicInteger(0) }
     var requestCount by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(webView, currentUrl, pageGeneration, savedLoginStore) {
+        val view = webView ?: return@LaunchedEffect
+        val store = savedLoginStore ?: return@LaunchedEffect
+        if (captureEnabled || loginAttempt.stopped || !SchoolLoginScript.isTrustedLogin(currentUrl)) return@LaunchedEffect
+        val credentials = store.credentials() ?: run {
+            loginNeedsManual = store.status.value.paused
+            return@LaunchedEffect
+        }
+        // AD FS may render the password step dynamically without another page navigation.
+        repeat(30) {
+            kotlinx.coroutines.delay(400)
+            if (sslError != null || !SchoolLoginScript.isTrustedLogin(view.url)) return@LaunchedEffect
+            val step = view.evaluateLoginScript(SchoolLoginScript.inspect())
+            if (step == "manual" || step == "refused") {
+                loginAttempt.stop()
+                loginNeedsManual = true
+                return@LaunchedEffect
+            }
+            if (step == "password" || step == "username") {
+                val password = step == "password"
+                if (!loginAttempt.claim(password)) {
+                    return@repeat // Wait for the next step; do not click the current form again.
+                }
+                if (password && !store.beginAttempt()) return@LaunchedEffect
+                val result = view.evaluateLoginScript(SchoolLoginScript.submit(credentials, password))
+                if (result != "submitted") {
+                    loginAttempt.stop()
+                    loginNeedsManual = true
+                    return@LaunchedEffect
+                }
+                if (password) {
+                    // Never submit a password twice, even if the form reloads with an error.
+                    kotlinx.coroutines.delay(1_000)
+                }
+                // Wait for a dynamic two-step form. A navigation restarts this effect.
+                kotlinx.coroutines.delay(800)
+            }
+        }
+    }
 
     BackHandler(enabled = true) {
         val view = webView
@@ -217,6 +264,12 @@ fun SchoolWebScreen(
                     )
                 }
 
+                if (loginNeedsManual) {
+                    Text(stringResource(R.string.saved_login_manual),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                }
+
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
@@ -243,6 +296,11 @@ fun SchoolWebScreen(
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     progress = 100
+                                    pageGeneration++
+                                    if (loginAttempt.passwordSubmitted && SchoolLoginScript.isTrustedLogin(url)) {
+                                        loginAttempt.stop()
+                                        loginNeedsManual = true
+                                    }
                                     if (captureEnabled) {
                                         view?.evaluateJavascript(CaptureScript.INSTALL, null)
                                         view?.evaluateJavascript(CaptureScript.READ) { raw ->
@@ -251,7 +309,7 @@ fun SchoolWebScreen(
                                     }
                                     url?.let {
                                         currentUrl = it
-                                        onPageFinished(it)
+                                        onPageFinished(it, loginAttempt.passwordSubmitted && !loginAttempt.stopped)
                                     }
                                 }
 
@@ -303,6 +361,7 @@ fun SchoolWebScreen(
                                     // check is a hard stop, not a warning.
                                     AppLog.e("SSL error refused for ${AllowedHosts.hostOf(error?.url)}")
                                     handler?.cancel()
+                                    loginAttempt.stop()
                                     sslError = error?.let { "${it.primaryError}" } ?: "unknown"
                                     progress = 100
                                 }
@@ -354,6 +413,12 @@ fun SchoolWebScreen(
                 }
             }
         }
+    }
+}
+
+private suspend fun WebView.evaluateLoginScript(script: String): String = suspendCancellableCoroutine { continuation ->
+    evaluateJavascript(script) { result ->
+        if (continuation.isActive) continuation.resume(result?.trim('"').orEmpty())
     }
 }
 
