@@ -1,6 +1,7 @@
 package com.slai.campus.core.web
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.slai.campus.core.session.SchoolCredentials
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -13,17 +14,27 @@ class SchoolLoginScriptTest {
         val credentials = SchoolCredentials("test-only@example.invalid", "test-only'\\\n\"</script>")
         val harness = listOf(File("../tools/test-school-login.cjs"), File("tools/test-school-login.cjs"))
             .first { it.exists() }
-        val process = ProcessBuilder("node", harness.absolutePath).redirectErrorStream(true).start()
-        process.outputStream.bufferedWriter().use {
+        // Drain output independently of waitFor: Linux pipes can fill with assertion diagnostics.
+        val output = File.createTempFile("slaier-login-script-", ".log")
+        val process = ProcessBuilder("node", harness.absolutePath)
+            .redirectErrorStream(true).redirectOutput(output).start()
+        try {
+            process.outputStream.bufferedWriter().use {
             it.write(JsonObject(mapOf(
                 "inspect" to JsonPrimitive(SchoolLoginScript.inspect()),
                 "username" to JsonPrimitive(SchoolLoginScript.submit(credentials, false)),
                 "password" to JsonPrimitive(SchoolLoginScript.submit(credentials, true)),
                 "account" to JsonPrimitive(credentials.username), "secret" to JsonPrimitive(credentials.password)
             )).toString())
+            }
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            val report = output.readText()
+            assertWithMessage(report.take(4_000)).that(finished).isTrue()
+            assertWithMessage(report.take(4_000)).that(process.exitValue()).isEqualTo(0)
+            assertThat(report).contains("boundaries passed")
+        } finally {
+            if (process.isAlive) process.destroyForcibly()
+            output.delete()
         }
-        assertThat(process.waitFor(10, TimeUnit.SECONDS)).isTrue()
-        assertThat(process.exitValue()).isEqualTo(0)
-        assertThat(process.inputStream.bufferedReader().readText()).contains("boundaries passed")
     }
 }
