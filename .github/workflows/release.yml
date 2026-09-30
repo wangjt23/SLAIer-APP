@@ -20,6 +20,11 @@ on:
   push:
     tags: [ 'v*' ]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to rebuild (for example v1.2.0); leave empty for a test artifact'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -37,6 +42,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -46,6 +53,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       # 显式装齐构建用的组件，不依赖 AGP 的自动下载 —— 自动下载失败时的报错很难读，
       # 而且下面验证签名那一步需要 apksigner 确实存在。
@@ -103,10 +112,15 @@ jobs:
 
       - name: Rename the APK and compute checksums
         id: package
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          # 只有 tag 触发才有版本号；手动 dispatch 时 GITHUB_REF_NAME 是分支名，不能当版本用。
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+          # Manual recovery checks out the existing tag; it never moves or replaces that tag.
+          if [ -n "$REQUESTED_RELEASE_TAG" ]; then
+            [[ "$REQUESTED_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            VERSION="${REQUESTED_RELEASE_TAG#v}"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="dev-$(git rev-parse --short HEAD)"
@@ -126,10 +140,11 @@ jobs:
           path: out/
 
       - name: Publish the release
-        # 手动 dispatch（没有 tag）时不建 Release，只留 artifact 供下载。
-        if: github.ref_type == 'tag'
+        # Manual dispatch without a requested tag still produces only a test artifact.
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
             out/*.apk
             out/SHA256SUMS.txt
