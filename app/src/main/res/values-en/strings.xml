@@ -270,10 +270,10 @@
     <string name="attendance_no_entry_records">No entry/exit records available</string>
     <string name="attendance_unpaired_leave_hint">Some records could not be paired. The total uses available entry/exit records only.</string>
     <string name="saved_login_title">Remember account and sign in automatically</string>
-    <string name="saved_login_summary">Try signing in when your session expires. Credentials are encrypted on this device. Captchas or additional verification still need your attention.</string>
+    <string name="saved_login_summary">Sign in silently when your session expires, with a status message only. Credentials stay encrypted on this device. If sign-in fails, use the sign-in button in Attendance or Settings.</string>
     <string name="saved_login_enable">Automatic sign-in</string>
     <string name="saved_login_stored">Saved on this device</string>
-    <string name="saved_login_paused">Automatic sign-in was not confirmed and is paused. Check your credentials, or turn this off and on to retry.</string>
+    <string name="saved_login_paused">Automatic sign-in is paused. Sign in manually to resume it.</string>
     <string name="saved_login_change">Change credentials</string>
     <string name="saved_login_save">Save and enable</string>
     <string name="saved_login_clear">Clear credentials</string>
@@ -281,5 +281,7 @@
     <string name="saved_login_username">Email or student ID</string>
     <string name="saved_login_password">Password</string>
     <string name="saved_login_save_error">Could not save or clear. Please try again.</string>
-    <string name="saved_login_manual">Automatic sign-in could not finish. Complete the captcha or sign in manually. Update your credentials or re-enable automatic sign-in to retry.</string>
+    <string name="automatic_login_running">Signing in automatically…</string>
+    <string name="automatic_login_succeeded">Signed in</string>
+    <string name="automatic_login_failed">Automatic sign-in failed. Please sign in manually.</string>
 </resources>

@@ -112,12 +112,7 @@ fun HomeScreen(
                         state.today.isEmpty() -> item {
                             EmptyTodayCard(
                                 isFirstRun = state.isFirstRun,
-                                onOpenSchedule = { navigator.openTab(Tab.SCHEDULE) },
-                                onOpenWeb = {
-                                    state.urls?.sisSchedulePage?.let {
-                                        navigator.openWeb(it.url, it.label, SchoolSystem.SIS, false)
-                                    }
-                                }
+                                onOpenSchedule = { navigator.openTab(Tab.SCHEDULE) }
                             )
                         }
 
@@ -251,7 +246,7 @@ private fun sourceLabel(source: ScheduleSource): String = when (source) {
 }
 
 @Composable
-private fun EmptyTodayCard(isFirstRun: Boolean, onOpenSchedule: () -> Unit, onOpenWeb: () -> Unit) {
+private fun EmptyTodayCard(isFirstRun: Boolean, onOpenSchedule: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -268,7 +263,6 @@ private fun EmptyTodayCard(isFirstRun: Boolean, onOpenSchedule: () -> Unit, onOp
                 )
                 Button(onClick = onOpenSchedule) { Text(stringResource(R.string.action_week_schedule)) }
             }
-            TextButton(onClick = onOpenWeb) { Text(stringResource(R.string.action_open_web)) }
         }
     }
 }

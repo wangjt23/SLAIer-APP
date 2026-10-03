@@ -26,6 +26,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
+import com.slai.campus.core.web.AutomaticLoginState
+import com.slai.campus.core.web.SilentSchoolLogin
+import com.slai.campus.core.session.awaitAutomaticLoginResult
 import javax.inject.Inject
 
 /**
@@ -43,12 +49,99 @@ class MainViewModel @Inject constructor(
     private val updateRepository: com.slai.campus.domain.update.UpdateRepository,
     private val cookieBridge: com.slai.campus.core.session.WebCookieBridge,
     val savedLoginStore: com.slai.campus.core.session.SavedLoginStore,
+    private val silentSchoolLogin: SilentSchoolLogin,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     val session: StateFlow<SessionSnapshot> = sessionManager.state
     val savedLogin = savedLoginStore.status
     private var automaticLoginRevision: Long? = null
+    private var automaticLoginJob: Job? = null
+    private val _automaticLoginState = MutableStateFlow(AutomaticLoginState.IDLE)
+    val automaticLoginState = _automaticLoginState.asStateFlow()
+
+    fun stopAutomaticLogin() {
+        automaticLoginJob?.cancel()
+        if (_automaticLoginState.value == AutomaticLoginState.RUNNING) {
+            _automaticLoginState.value = AutomaticLoginState.IDLE
+        }
+    }
+
+    /** Called by the foreground root; this never creates a visible navigation overlay. */
+    fun updateAutomaticLogin(foregroundAvailable: Boolean) {
+        val status = savedLogin.value
+        if (!foregroundAvailable || !status.enabled || !status.saved) {
+            stopAutomaticLogin()
+            _automaticLoginState.value = AutomaticLoginState.IDLE
+            return
+        }
+        if (automaticLoginJob?.isCompleted == false) {
+            if (automaticLoginRevision != status.revision) stopAutomaticLogin()
+            return
+        }
+        if (session.value.stu !in setOf(SessionState.EXPIRED, SessionState.NEEDS_LOGIN)) return
+        if (status.paused) {
+            _automaticLoginState.value = AutomaticLoginState.FAILED
+            return
+        }
+        if (!claimAutomaticLogin()) return
+        automaticLoginJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
+            fun freshlyAuthenticated() = sessionManager.authenticationVersion(SchoolSystem.STU) > authenticationVersion
+            _automaticLoginState.value = AutomaticLoginState.RUNNING
+            try {
+                val entry = automaticStuEntry()
+                val succeeded = entry != null && awaitAutomaticLoginResult(
+                    awaitFreshAuthentication = {
+                        sessionManager.awaitAuthenticationAfter(SchoolSystem.STU, authenticationVersion)
+                    },
+                    hasFreshAuthentication = ::freshlyAuthenticated,
+                    signIn = {
+                        silentSchoolLogin.signIn(entry, savedLoginStore) {
+                            sessionManager.probe(SchoolSystem.STU, requireFresh = true) == SessionState.AUTHENTICATED
+                        }
+                    }
+                )
+                if (!succeeded && !freshlyAuthenticated()) savedLoginStore.pauseAutomaticLogin()
+                // Recheck after the disk write: a concurrent attendance response may have just succeeded.
+                if (succeeded || freshlyAuthenticated()) {
+                    cookieBridge.flush()
+                    savedLoginStore.loginSucceeded()
+                    automaticLoginRevision = null
+                    _automaticLoginState.value = AutomaticLoginState.SUCCEEDED
+                    viewModelScope.launch { refreshAttendanceAfterLogin() }
+                } else {
+                    _automaticLoginState.value = AutomaticLoginState.FAILED
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppLog.w("automatic login failed: ${error.javaClass.simpleName}")
+                if (freshlyAuthenticated()) {
+                    runCatching { savedLoginStore.loginSucceeded() }
+                    automaticLoginRevision = null
+                    _automaticLoginState.value = AutomaticLoginState.SUCCEEDED
+                } else {
+                    runCatching { savedLoginStore.pauseAutomaticLogin() }
+                    _automaticLoginState.value = AutomaticLoginState.FAILED
+                }
+            } finally {
+                if (_automaticLoginState.value == AutomaticLoginState.RUNNING) {
+                    _automaticLoginState.value = AutomaticLoginState.IDLE
+                }
+                automaticLoginJob = null
+            }
+        }
+        automaticLoginJob?.start()
+    }
+
+    private suspend fun refreshAttendanceAfterLogin() {
+        sessionManager.requireAccountHash()
+        val today = timeProvider.today()
+        attendanceRepository.refresh(com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today))
+        val (from, to) = com.slai.campus.domain.attendance.monthPunchRange(java.time.YearMonth.from(today))
+        attendanceRepository.refreshPunches(from, to)
+    }
 
     /** Do not reopen a dismissed flow during recomposition or an activity recreation. */
     fun claimAutomaticLogin(): Boolean {
@@ -113,7 +206,7 @@ class MainViewModel @Inject constructor(
      * the session, and on success refresh data for that system.
      * This closes the loop the plan describes in §15.
      */
-    fun onWebPageFinished(url: String, isLoginFlow: Boolean, usedSavedLogin: Boolean = false) {
+    fun onWebPageFinished(url: String, isLoginFlow: Boolean) {
         if (!isLoginFlow) return
         val landed = businessLanding(url) ?: return
         if (_webCompleting.value) return
@@ -125,10 +218,11 @@ class MainViewModel @Inject constructor(
                 // just established can vanish if the app is killed, and the timetable silently
                 // starts answering 901 again.
                 cookieBridge.flush()
-                val state = sessionManager.probe(landed)
+                val state = sessionManager.probe(landed, requireFresh = true)
                 AppLog.i("login flow finished for $landed: $state")
                 if (state == SessionState.AUTHENTICATED) {
-                    if (usedSavedLogin) savedLoginStore.loginSucceeded()
+                    // A successful explicit sign-in recovers a paused automatic login.
+                    savedLoginStore.loginSucceeded()
                     automaticLoginRevision = null
                     // 先让 WebView 退场，再刷新对应系统的数据，
                     // 不必等这一轮请求跑完（那可能要好几秒）。
@@ -136,12 +230,7 @@ class MainViewModel @Inject constructor(
                     sessionManager.requireAccountHash()
                     when (landed) {
                         SchoolSystem.SIS -> scheduleRepository.refresh(RefreshReason.AFTER_LOGIN)
-                        SchoolSystem.STU -> {
-                            val today = timeProvider.today()
-                            attendanceRepository.refresh(com.slai.campus.data.stu.StuAttendanceDataSource.monthOf(today))
-                            val (from, to) = com.slai.campus.domain.attendance.monthPunchRange(java.time.YearMonth.from(today))
-                            attendanceRepository.refreshPunches(from, to)
-                        }
+                        SchoolSystem.STU -> refreshAttendanceAfterLogin()
                     }
                 }
             } finally {

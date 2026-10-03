@@ -12,6 +12,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import com.slai.campus.ui.components.AutomaticLoginNotice
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,10 +55,14 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
 
     val session by viewModel.session.collectAsStateWithLifecycle()
     val savedLogin by viewModel.savedLogin.collectAsStateWithLifecycle()
+    val automaticLoginState by viewModel.automaticLoginState.collectAsStateWithLifecycle()
     var resumed by remember { mutableStateOf(false) }
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
         resumed = true
-        onPauseOrDispose { resumed = false }
+        onPauseOrDispose {
+            viewModel.stopAutomaticLogin()
+            resumed = false
+        }
     }
     val webCompleting by viewModel.webCompleting.collectAsStateWithLifecycle()
     val sisEntryUrl by viewModel.sisEntryUrl.collectAsStateWithLifecycle()
@@ -67,14 +72,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
     val context = LocalContext.current
 
     LaunchedEffect(session.stu, savedLogin, overlay, resumed) {
-        if (!resumed || overlay != null || session.stu !in setOf(
-            com.slai.campus.core.session.SessionState.EXPIRED,
-            com.slai.campus.core.session.SessionState.NEEDS_LOGIN
-        ) || !savedLogin.canAttempt) return@LaunchedEffect
-        val entry = viewModel.automaticStuEntry() ?: return@LaunchedEffect
-        if (viewModel.claimAutomaticLogin()) {
-            overlay = Overlay.Web(entry, context.getString(R.string.attendance_stu_login), SchoolSystem.STU, true, captureEnabled = false)
-        }
+        viewModel.updateAutomaticLogin(foregroundAvailable = resumed && overlay == null)
     }
 
     /*
@@ -102,6 +100,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
         AppNavigator(
             openTab = { selectedTab = it },
             openWeb = { url, title, system, isLoginFlow ->
+                viewModel.stopAutomaticLogin()
                 overlay = Overlay.Web(url, title, system, isLoginFlow, captureEnabled = false)
             },
             openCapture = { url, title, system ->
@@ -117,6 +116,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
+            snackbarHost = { AutomaticLoginNotice(automaticLoginState) },
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 /*
@@ -171,15 +171,14 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
                     title = current.title,
                     onClose = { overlay = null },
                     captureEnabled = current.captureEnabled,
-                    savedLoginStore = if (current.isLoginFlow && !current.captureEnabled) viewModel.savedLoginStore else null,
                     // 登录页上先讲清楚"成功就会自动回去"，别等用户输完密码再提示关闭。
                     hint = if (current.closeOnLogin) loginAutoCloseHint else null,
                     onFinishCapture = { session ->
                         viewModel.onCaptureFinished(session)
                         overlay = Overlay.Providers
                     },
-                    onPageFinished = { url, usedSavedLogin ->
-                        viewModel.onWebPageFinished(url, current.isLoginFlow, usedSavedLogin)
+                    onPageFinished = { url ->
+                        viewModel.onWebPageFinished(url, current.isLoginFlow)
                         /*
                          * 未登录时打开任何业务页面（“打开教务系统”、课表网页兜底……），学校会 302 到正方
                          * 自带的 `/yjsxt/xtgl/login_slogin.html`：一个学生没有密码、也没有任何通往统一

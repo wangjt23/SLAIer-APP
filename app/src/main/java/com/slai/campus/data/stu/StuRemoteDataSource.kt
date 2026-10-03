@@ -60,30 +60,9 @@ class StuRemoteDataSource @Inject constructor(
             val url = StuConfig.url(baseUrl, template)
             val request = Request.Builder().url(url).get()
                 .header("Accept", "text/html,application/json")
+                .header("Cache-Control", "no-cache, no-store")
                 .build()
-            val response = runCatching { apiClient.newCall(request).execute() }.getOrElse {
-                AppLog.w("STU probe transport failure: ${it.javaClass.simpleName}")
-                return@withContext SessionState.ERROR
-            }
-            response.use { res ->
-                val location = res.header("Location")
-                when {
-                    res.code in 300..399 && StuCheckInParser.isLoginUrl(location) -> return@withContext SessionState.EXPIRED
-                    res.code in 300..399 -> continue
-                    res.code == 401 || res.code == 403 -> return@withContext SessionState.EXPIRED
-                    res.code == 200 -> {
-                        val body = runCatching { res.peekBody(8 * 1024).string() }.getOrDefault("")
-                        // JeeSite answers 200 with the login page when a session is missing.
-                        return@withContext if (StuCheckInParser.looksLikeLoginPage(body)) {
-                            SessionState.EXPIRED
-                        } else {
-                            SessionState.AUTHENTICATED
-                        }
-                    }
-                    res.code == 404 -> continue
-                    else -> continue
-                }
-            }
+            probeStuCall(apiClient.newCall(request))?.let { return@withContext it }
         }
         SessionState.ERROR
     }

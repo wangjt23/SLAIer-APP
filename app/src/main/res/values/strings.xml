@@ -263,10 +263,10 @@
     <string name="attendance_no_entry_records">暂无进出记录</string>
     <string name="attendance_unpaired_leave_hint">部分进出记录未配对，时长仅按可用进出记录累计</string>
     <string name="saved_login_title">记住账号并自动登录</string>
-    <string name="saved_login_summary">开启后，登录过期时会尝试重新登录。账号密码加密保存在本机；验证码或二次验证仍需你操作。</string>
+    <string name="saved_login_summary">开启后，登录过期时会静默尝试登录，仅显示状态提示。账号密码加密保存在本机；失败后请通过考勤或设置中的登录入口自行登录。</string>
     <string name="saved_login_enable">自动登录</string>
     <string name="saved_login_stored">已保存到本机</string>
-    <string name="saved_login_paused">自动尝试未确认成功，已暂停。请检查账号密码，或关闭后重新开启。</string>
+    <string name="saved_login_paused">自动登录已暂停，请自行登录；登录成功后恢复自动登录。</string>
     <string name="saved_login_change">修改账号密码</string>
     <string name="saved_login_save">保存并开启</string>
     <string name="saved_login_clear">清除账号密码</string>
@@ -274,5 +274,7 @@
     <string name="saved_login_username">邮箱或学号</string>
     <string name="saved_login_password">密码</string>
     <string name="saved_login_save_error">无法保存或清除，请重试。</string>
-    <string name="saved_login_manual">本次自动登录未完成，请手动处理验证码或登录。修改账号密码或重新开启自动登录后可再次尝试。</string>
+    <string name="automatic_login_running">正在自动登录…</string>
+    <string name="automatic_login_succeeded">登录成功</string>
+    <string name="automatic_login_failed">自动登录失败，请自行登录</string>
 </resources>

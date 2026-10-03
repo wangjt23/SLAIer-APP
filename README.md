@@ -42,7 +42,7 @@
 **推荐：从 [Releases](../../releases) 下载 APK。**
 
 ```text
-slaier-1.2.0.apk       正式版（R8 混淆 + v2/v3 签名，约 2.7 MB）
+slaier-1.2.1.apk       正式版（R8 混淆 + v2/v3 签名，约 2.7 MB）
 SHA256SUMS.txt         校验用
 ```
 
@@ -50,7 +50,7 @@ SHA256SUMS.txt         校验用
 
 ```bash
 # A. 用 adb（手机上需打开「USB 调试」）
-adb install -r slaier-1.2.0.apk
+adb install -r slaier-1.2.1.apk
 ```
 
 **B. 手机上直接点开 APK** —— 把文件传到手机（微信文件传输 / 数据线 / 网盘），点击安装，
@@ -61,8 +61,8 @@ adb install -r slaier-1.2.0.apk
 校验下载是否完整：
 
 ```bash
-shasum -a 256 slaier-1.2.0.apk      # macOS / Linux
-certutil -hashfile slaier-1.2.0.apk SHA256   # Windows
+shasum -a 256 slaier-1.2.1.apk      # macOS / Linux
+certutil -hashfile slaier-1.2.1.apk SHA256   # Windows
 ```
 
 > 系统要求：**Android 8.0（API 26）及以上**，targetSdk 36。

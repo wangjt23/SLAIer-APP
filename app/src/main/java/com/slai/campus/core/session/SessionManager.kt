@@ -4,6 +4,7 @@ import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.common.ApplicationScope
 import com.slai.campus.core.common.SchoolSystem
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -53,6 +54,18 @@ class SessionManager @Inject constructor(
 
     private val probesBySystem: Map<SchoolSystem, SessionProbe> = probes.associateBy { it.system }
     private val probeMutex = Mutex()
+    // In-memory evidence from completed network requests, never hydrated from cached login state.
+    private val authenticationEvidence = AuthenticationEvidence()
+
+    fun authenticationVersion(system: SchoolSystem): Long = authenticationEvidence.version(system)
+
+    suspend fun awaitAuthenticationAfter(system: SchoolSystem, version: Long) {
+        authenticationEvidence.awaitAfter(system, version)
+    }
+
+    private fun recordAuthentication(system: SchoolSystem) {
+        authenticationEvidence.confirmed(system)
+    }
 
     /** 尚未落盘的两个系统状态。key 只在"值还没写进 DataStore"期间存在。 */
     private val pending = MutableStateFlow<Map<SchoolSystem, SessionState>>(emptyMap())
@@ -91,7 +104,10 @@ class SessionManager @Inject constructor(
 
     suspend fun set(system: SchoolSystem, newState: SessionState) {
         val previous = stateOf(system)
-        if (previous == newState) return
+        if (previous == newState) {
+            if (newState == SessionState.AUTHENTICATED) recordAuthentication(system)
+            return
+        }
 
         // 先写 overlay：状态机的读者（UI、仓库、worker）必须能立刻看到这次转换。
         pending.update { it + (system to newState) }
@@ -100,6 +116,7 @@ class SessionManager @Inject constructor(
             store.setState(system, newState)
         }
         AppLog.i("session $system: $previous -> $newState")
+        if (newState == SessionState.AUTHENTICATED) recordAuthentication(system)
     }
 
     suspend fun setAccountHash(hash: String?) {
@@ -148,16 +165,25 @@ class SessionManager @Inject constructor(
      * already established: if the user was demonstrably logged out and then lost signal, the app must
      * keep saying "需要重新登录" rather than degrade to a vague "无法检测".
      */
-    suspend fun probe(system: SchoolSystem): SessionState = probeMutex.withLock {
+    suspend fun probe(system: SchoolSystem, requireFresh: Boolean = false): SessionState = probeMutex.withLock {
         val probe = probesBySystem[system] ?: return@withLock SessionState.ERROR
-        val result = runCatching { probe.probe() }
-            .onFailure { AppLog.w("probe $system failed: ${it.javaClass.simpleName}") }
-            .getOrDefault(SessionState.ERROR)
+        val versionBeforeProbe = authenticationVersion(system)
+        val result = try { probe.probe() } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            AppLog.w("probe $system failed: ${error.javaClass.simpleName}")
+            SessionState.ERROR
+        }
 
         val current = stateOf(system)
+        // A request sent with old cookies must not overwrite a newer successful attendance fetch.
+        if (result != SessionState.AUTHENTICATED && authenticationVersion(system) > versionBeforeProbe) {
+            return@withLock if (requireFresh) result else current
+        }
         val effective = if (result == SessionState.ERROR && current.isDefinitive) current else result
-        set(system, effective)
-        effective
+        // Retaining an old state on transport failure is not new proof of authentication.
+        if (result != SessionState.ERROR || !current.isDefinitive) set(system, effective)
+        if (requireFresh) result else effective
     }
 
     suspend fun probeAll(): SessionSnapshot {

@@ -79,6 +79,13 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
         }
     }
 
+    /** Captcha, timeout and transport failures also require an explicit manual recovery. */
+    suspend fun pauseAutomaticLogin() = withContext(Dispatchers.IO) {
+        synchronized(this@SavedLoginStore) {
+            read()?.let { write(Record(it.credentials, it.enabled, true, it.revision)) }
+        }
+    }
+
     suspend fun clear() = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
             file.delete()
