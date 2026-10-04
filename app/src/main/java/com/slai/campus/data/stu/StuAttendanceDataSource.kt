@@ -46,21 +46,7 @@ class StuAttendanceDataSource @Inject constructor(
             return@withContext Outcome(RemoteResult.NetworkUnavailable("设备无网络"), "")
         }
 
-        val url = StuConfig.url(baseUrl, StuConfig.ATTENDANCE_API)
-        val body = FormBody.Builder()
-            .add("startMonth", month)
-            .add("cycleWeek", "")
-            .build()
-
-        val request = Request.Builder()
-            .url(url)
-            .post(body)
-            .header("Accept", "application/json, text/javascript, */*; q=0.01")
-            .header("Cache-Control", "no-cache, no-store")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            .header("Referer", StuConfig.url(baseUrl, StuConfig.ATTENDANCE_PAGE))
-            .build()
+        val request = attendanceRequest(baseUrl, month)
 
         val started = System.currentTimeMillis()
         val response = runCatching { apiClient.newCall(request).execute() }.getOrElse { error ->
@@ -84,9 +70,10 @@ class StuAttendanceDataSource @Inject constructor(
             val result = when {
                 res.code in 300..399 && StuCheckInParser.isLoginUrl(res.header("Location")) ->
                     RemoteResult.SessionExpired
-                res.code == 401 || res.code == 403 -> RemoteResult.SessionExpired
+                res.code == 401 || (res.code == 403 && StuCheckInParser.hasLoginForm(text)) ->
+                    RemoteResult.SessionExpired
                 !res.isSuccessful -> RemoteResult.ServerError(res.code, res.message.ifBlank { null })
-                StuCheckInParser.looksLikeLoginPage(text) -> RemoteResult.SessionExpired
+                StuCheckInParser.hasLoginForm(text) -> RemoteResult.SessionExpired
                 else -> StuAttendanceParser.parse(text, month)
             }
             return@withContext Outcome(result, trace)
@@ -102,4 +89,21 @@ class StuAttendanceDataSource @Inject constructor(
         fun isValidMonth(month: String): Boolean =
             Regex("^\\d{4}-\\d{2}$").matches(month) && month.substring(5).toIntOrNull() in 1..12
     }
+}
+
+internal fun attendanceRequest(baseUrl: String, month: String): Request {
+    val url = StuConfig.url(baseUrl, StuConfig.ATTENDANCE_API)
+    val body = FormBody.Builder()
+        .add("startMonth", month)
+        .add("cycleWeek", "")
+        .build()
+    return Request.Builder()
+        .url(url)
+        .post(body)
+        .header("Accept", "application/json, text/javascript, */*; q=0.01")
+        .header("Cache-Control", "no-cache, no-store")
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("Referer", StuConfig.url(baseUrl, StuConfig.ATTENDANCE_PAGE))
+        .build()
 }

@@ -22,12 +22,13 @@ internal suspend fun probeStuCall(call: Call): SessionState? = suspendCancellabl
             val result = response.use { res ->
                 when {
                     res.code in 300..399 && StuCheckInParser.isLoginUrl(res.header("Location")) -> SessionState.EXPIRED
-                    res.code == 401 || res.code == 403 -> SessionState.EXPIRED
+                    res.code == 401 -> SessionState.EXPIRED
+                    res.code == 403 -> SessionState.ERROR
                     res.code == 200 -> {
                         val body = runCatching { res.peekBody(8 * 1024).string() }.getOrNull()
                         when {
                             body.isNullOrBlank() -> SessionState.ERROR
-                            StuCheckInParser.looksLikeLoginPage(body) -> SessionState.EXPIRED
+                            StuCheckInParser.hasLoginForm(body) -> SessionState.EXPIRED
                             else -> SessionState.AUTHENTICATED
                         }
                     }

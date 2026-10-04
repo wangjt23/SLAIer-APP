@@ -104,6 +104,14 @@ object StuCheckInParser {
         return lowered.contains("/a/login") || lowered.contains("jeesite") && lowered.contains("login")
     }
 
+    /** Actual form markup, not a navigation link or a bundled login.js filename. */
+    fun hasLoginForm(body: String?): Boolean {
+        val text = body?.trimStart().orEmpty()
+        if (!text.startsWith("<")) return false
+        return Regex("""(?is)<form\b[^>]*\b(?:id|name)\s*=\s*["']loginForm(?:Paginated)?["']""").containsMatchIn(text) ||
+            Regex("""(?is)<form\b[^>]*\baction\s*=\s*["'][^"']*/a/login(?:[?;/'"])[^>]*>""").containsMatchIn(text)
+    }
+
     fun isLoginUrl(url: String?): Boolean {
         val value = url?.lowercase().orEmpty()
         return value.contains(StuConfig.LOGIN_PATH) || value.contains("/sso/login") ||

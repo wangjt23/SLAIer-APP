@@ -21,13 +21,19 @@ import kotlin.coroutines.resume
 
 /** Measured off-screen like WebViewExtractor; never attached to an Activity or opens a browser. */
 class SilentSchoolLogin @Inject constructor(@ApplicationContext private val context: Context) {
-    suspend fun signIn(entry: String, store: SavedLoginStore, confirmSession: suspend () -> Boolean): Boolean =
+    suspend fun signIn(
+        entry: String,
+        store: SavedLoginStore,
+        authorizeCredentials: suspend () -> Boolean,
+        onManualRequired: () -> Unit,
+        confirmSession: suspend () -> Boolean
+    ): Boolean =
         withContext(Dispatchers.Main.immediate) {
             if (!SilentLoginUrls.allowed(entry)) return@withContext false
-            val credentials = store.credentials() ?: return@withContext false
+            var credentials: SchoolCredentials? = null
             val view = WebView(context)
             try {
-                val page = LoginPage(view, credentials)
+                val page = LoginPage(view) { credentials }
                 view.settings.configureForSchool()
                 CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
                 view.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
@@ -35,7 +41,14 @@ class SilentSchoolLogin @Inject constructor(@ApplicationContext private val cont
                 view.layout(0, 0, 1080, 1920)
                 view.webViewClient = page.client
                 view.loadUrl(entry)
-                runSilentLogin(page, store::beginAttempt, confirmSession)
+                runSilentLogin(page, store::beginAttempt, confirmSession,
+                    authorizeCredentials = {
+                        // SSO redirects use only cookies. Decrypt the password only at an actual form.
+                        if (!authorizeCredentials()) false else {
+                            credentials = store.credentials()
+                            credentials != null
+                        }
+                    }, onManualRequired = onManualRequired)
             } finally {
                 // Cancellation (app backgrounded / manual login) also destroys the hidden page.
                 view.stopLoading()
@@ -44,7 +57,7 @@ class SilentSchoolLogin @Inject constructor(@ApplicationContext private val cont
             }
         }
 
-    private class LoginPage(private val view: WebView, private val credentials: SchoolCredentials) : SilentLoginPage {
+    private class LoginPage(private val view: WebView, private val credentials: () -> SchoolCredentials?) : SilentLoginPage {
         override val url: String? get() = view.url
         override var failed = false
         override var loaded = false
@@ -91,7 +104,10 @@ class SilentSchoolLogin @Inject constructor(@ApplicationContext private val cont
         }
 
         override suspend fun inspect(): String = evaluate(SchoolLoginScript.inspect())
-        override suspend fun submit(password: Boolean): String = evaluate(SchoolLoginScript.submit(credentials, password))
+        override suspend fun submit(password: Boolean): String {
+            val saved = credentials() ?: return "refused"
+            return evaluate(SchoolLoginScript.submit(saved, password))
+        }
 
         private suspend fun evaluate(script: String): String = suspendCancellableCoroutine { continuation ->
             view.evaluateJavascript(script) { result ->

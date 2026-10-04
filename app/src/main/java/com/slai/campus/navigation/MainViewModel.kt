@@ -32,6 +32,8 @@ import kotlinx.coroutines.CancellationException
 import com.slai.campus.core.web.AutomaticLoginState
 import com.slai.campus.core.web.SilentSchoolLogin
 import com.slai.campus.core.session.awaitAutomaticLoginResult
+import com.slai.campus.core.session.recoverAttendanceSession
+import com.slai.campus.data.stu.StuAttendanceSessionVerifier
 import javax.inject.Inject
 
 /**
@@ -50,6 +52,7 @@ class MainViewModel @Inject constructor(
     private val cookieBridge: com.slai.campus.core.session.WebCookieBridge,
     val savedLoginStore: com.slai.campus.core.session.SavedLoginStore,
     private val silentSchoolLogin: SilentSchoolLogin,
+    private val attendanceSessionVerifier: StuAttendanceSessionVerifier,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -80,15 +83,14 @@ class MainViewModel @Inject constructor(
             return
         }
         if (session.value.stu !in setOf(SessionState.EXPIRED, SessionState.NEEDS_LOGIN)) return
-        if (status.paused) {
-            _automaticLoginState.value = AutomaticLoginState.FAILED
-            return
-        }
         if (!claimAutomaticLogin()) return
         automaticLoginJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
             fun freshlyAuthenticated() = sessionManager.authenticationVersion(SchoolSystem.STU) > authenticationVersion
-            _automaticLoginState.value = AutomaticLoginState.RUNNING
+            var usingCredentials = false
+            var recoveringSession = false
+            var manualRequired = false
+            _automaticLoginState.value = AutomaticLoginState.IDLE
             try {
                 val entry = automaticStuEntry()
                 val succeeded = entry != null && awaitAutomaticLoginResult(
@@ -97,39 +99,59 @@ class MainViewModel @Inject constructor(
                     },
                     hasFreshAuthentication = ::freshlyAuthenticated,
                     signIn = {
-                        silentSchoolLogin.signIn(entry, savedLoginStore) {
-                            sessionManager.probe(SchoolSystem.STU, requireFresh = true) == SessionState.AUTHENTICATED
+                        recoverAttendanceSession(::verifyAttendanceSession) {
+                            recoveringSession = true
+                            silentSchoolLogin.signIn(entry, savedLoginStore,
+                                authorizeCredentials = {
+                                    // An actual login form appeared after cookie-only SSO recovery.
+                                    // Check again before sending credentials or showing a login notice.
+                                    if (verifyAttendanceSession() != SessionState.EXPIRED) false
+                                    else if (!savedLogin.value.canAttempt) {
+                                        manualRequired = true
+                                        false
+                                    } else {
+                                        usingCredentials = true
+                                        _automaticLoginState.value = AutomaticLoginState.RUNNING
+                                        true
+                                    }
+                                },
+                                onManualRequired = { manualRequired = true },
+                                confirmSession = { verifyAttendanceSession() == SessionState.AUTHENTICATED })
                         }
                     }
                 )
-                if (!succeeded && !freshlyAuthenticated()) savedLoginStore.pauseAutomaticLogin()
+                if (!succeeded && !freshlyAuthenticated() && (usingCredentials || manualRequired)) {
+                    savedLoginStore.pauseAutomaticLogin()
+                }
                 // Recheck after the disk write: a concurrent attendance response may have just succeeded.
                 if (succeeded || freshlyAuthenticated()) {
                     cookieBridge.flush()
-                    savedLoginStore.loginSucceeded()
+                    if (usingCredentials) savedLoginStore.loginSucceeded()
                     automaticLoginRevision = null
-                    _automaticLoginState.value = AutomaticLoginState.SUCCEEDED
-                    viewModelScope.launch { refreshAttendanceAfterLogin() }
+                    _automaticLoginState.value = if (usingCredentials) AutomaticLoginState.SUCCEEDED else AutomaticLoginState.IDLE
+                    if (recoveringSession) viewModelScope.launch { refreshAttendanceAfterLogin() }
                 } else {
-                    _automaticLoginState.value = AutomaticLoginState.FAILED
+                    _automaticLoginState.value = if (usingCredentials || manualRequired) AutomaticLoginState.FAILED else AutomaticLoginState.IDLE
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 AppLog.w("automatic login failed: ${error.javaClass.simpleName}")
                 if (freshlyAuthenticated()) {
-                    runCatching { savedLoginStore.loginSucceeded() }
+                    if (usingCredentials) runCatching { savedLoginStore.loginSucceeded() }
                     automaticLoginRevision = null
-                    _automaticLoginState.value = AutomaticLoginState.SUCCEEDED
+                    _automaticLoginState.value = if (usingCredentials) AutomaticLoginState.SUCCEEDED else AutomaticLoginState.IDLE
                 } else {
-                    runCatching { savedLoginStore.pauseAutomaticLogin() }
-                    _automaticLoginState.value = AutomaticLoginState.FAILED
+                    if (usingCredentials || manualRequired) runCatching { savedLoginStore.pauseAutomaticLogin() }
+                    _automaticLoginState.value = if (usingCredentials || manualRequired) AutomaticLoginState.FAILED else AutomaticLoginState.IDLE
                 }
             } finally {
                 if (_automaticLoginState.value == AutomaticLoginState.RUNNING) {
                     _automaticLoginState.value = AutomaticLoginState.IDLE
                 }
                 automaticLoginJob = null
+                // Transport/unknown failures did not attempt a password; a later foreground check may retry.
+                if (!usingCredentials && !manualRequired) automaticLoginRevision = null
             }
         }
         automaticLoginJob?.start()
@@ -143,10 +165,20 @@ class MainViewModel @Inject constructor(
         attendanceRepository.refreshPunches(from, to)
     }
 
+    private suspend fun verifyAttendanceSession(): SessionState {
+        val before = sessionManager.authenticationVersion(SchoolSystem.STU)
+        val result = attendanceSessionVerifier.check()
+        if (result == SessionState.AUTHENTICATED ||
+            (result == SessionState.EXPIRED && sessionManager.authenticationVersion(SchoolSystem.STU) == before)) {
+            sessionManager.set(SchoolSystem.STU, result)
+        }
+        return result
+    }
+
     /** Do not reopen a dismissed flow during recomposition or an activity recreation. */
     fun claimAutomaticLogin(): Boolean {
         val status = savedLogin.value
-        if (!status.canAttempt || automaticLoginRevision == status.revision) return false
+        if (!status.saved || !status.enabled || automaticLoginRevision == status.revision) return false
         automaticLoginRevision = status.revision
         return true
     }
@@ -188,7 +220,7 @@ class MainViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             // Cached timetable reads never need a live SIS session.
-            runCatching { sessionManager.probe(SchoolSystem.STU) }
+            runCatching { verifyAttendanceSession() }
                 .onFailure { AppLog.w("startup probe failed: ${it.javaClass.simpleName}") }
         }
         viewModelScope.launch {
@@ -218,7 +250,8 @@ class MainViewModel @Inject constructor(
                 // just established can vanish if the app is killed, and the timetable silently
                 // starts answering 901 again.
                 cookieBridge.flush()
-                val state = sessionManager.probe(landed, requireFresh = true)
+                val state = if (landed == SchoolSystem.STU) verifyAttendanceSession()
+                    else sessionManager.probe(landed, requireFresh = true)
                 AppLog.i("login flow finished for $landed: $state")
                 if (state == SessionState.AUTHENTICATED) {
                     // A successful explicit sign-in recovers a paused automatic login.

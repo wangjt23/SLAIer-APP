@@ -34,7 +34,9 @@ internal suspend fun runSilentLogin(
     beginPasswordAttempt: suspend () -> Boolean,
     confirmSession: suspend () -> Boolean,
     timeoutMs: Long = 30_000,
-    pollMs: Long = 400
+    pollMs: Long = 400,
+    authorizeCredentials: suspend () -> Boolean = { true },
+    onManualRequired: () -> Unit = {}
 ): Boolean {
     if (page.failed || (page.url != null && page.url != "about:blank" && !SilentLoginUrls.allowed(page.url))) return false
     return withTimeoutOrNull(timeoutMs) {
@@ -48,7 +50,7 @@ internal suspend fun runSilentLogin(
                 false
             }
             val browser = async(start = CoroutineStart.LAZY) {
-                interactWithLoginPage(page, beginPasswordAttempt, pollMs)
+                interactWithLoginPage(page, beginPasswordAttempt, pollMs, authorizeCredentials, onManualRequired)
             }
             try {
                 select {
@@ -67,10 +69,13 @@ internal suspend fun runSilentLogin(
 private suspend fun interactWithLoginPage(
     page: SilentLoginPage,
     beginPasswordAttempt: suspend () -> Boolean,
-    pollMs: Long
+    pollMs: Long,
+    authorizeCredentials: suspend () -> Boolean,
+    onManualRequired: () -> Unit
 ) {
     val attempt = SchoolLoginAttempt()
     var passwordGeneration: Int? = null
+    var credentialsAuthorized = false
     while (true) {
         if (page.failed) return
         val url = page.url
@@ -78,8 +83,13 @@ private suspend fun interactWithLoginPage(
             if (!SilentLoginUrls.allowed(url)) return
             if (page.loaded && SchoolLoginScript.isTrustedLogin(url)) {
                 when (val step = page.inspect()) {
-                    "manual", "refused" -> return
+                    "manual" -> { onManualRequired(); return }
+                    "refused" -> return
                     "username", "password" -> {
+                        if (!credentialsAuthorized) {
+                            if (!authorizeCredentials()) return
+                            credentialsAuthorized = true
+                        }
                         val password = step == "password"
                         if (password && passwordGeneration != null && passwordGeneration != page.generation) return
                         if (attempt.claim(password)) {

@@ -134,4 +134,38 @@ class SilentLoginFlowTest {
         assertThat(runSilentLogin(page, { false }, { delay(100); true })).isTrue()
         assertThat(testScheduler.currentTime).isEqualTo(100)
     }
+
+    @Test fun `SSO-only recovery never requests credentials or a login notice`() = runTest {
+        val page = Page().apply { url = "https://stu.slai.edu.cn/sso/code"; loaded = false }
+        assertThat(runSilentLogin(page, { error("no password") }, { delay(100); true },
+            authorizeCredentials = { error("no login notice or credential read") })).isTrue()
+    }
+
+    @Test fun `a real form must pass fresh authorization before submitting anything`() = runTest {
+        val page = Page()
+        var checked = 0
+        var usable = false
+        val result = runSilentLogin(page, { error("already restored") }, { usable },
+            authorizeCredentials = { checked++; usable = true; false })
+        assertThat(result).isTrue()
+        assertThat(checked).isEqualTo(1)
+        assertThat(page.usernameSubmissions).isEqualTo(0)
+        assertThat(page.passwordSubmissions).isEqualTo(0)
+    }
+
+    @Test fun `only an expired form enables credential login once`() = runTest {
+        val page = Page()
+        var checks = 0
+        assertThat(runSilentLogin(page, { true }, { page.url == "https://stu.slai.edu.cn/a/index" },
+            authorizeCredentials = { checks++; true })).isTrue()
+        assertThat(checks).isEqualTo(1)
+        assertThat(page.passwordSubmissions).isEqualTo(1)
+    }
+
+    @Test fun `unavailable form recheck cannot submit credentials`() = runTest {
+        val page = Page()
+        assertThat(runSilentLogin(page, { error("no password") }, { false },
+            authorizeCredentials = { false })).isFalse()
+        assertThat(page.usernameSubmissions).isEqualTo(0)
+    }
 }
