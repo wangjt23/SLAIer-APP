@@ -43,7 +43,8 @@ internal suspend fun runSilentLogin(
         coroutineScope {
             val confirmed = async(start = CoroutineStart.LAZY) {
                 while (true) {
-                    if (withTimeoutOrNull(4_000) { confirmSession() } == true) return@async true
+                    // The verifier allows an 8 s network request; do not cancel it halfway through.
+                    if (withTimeoutOrNull(10_000) { confirmSession() } == true) return@async true
                     delay(1_500)
                 }
                 @Suppress("UNREACHABLE_CODE")
@@ -56,7 +57,7 @@ internal suspend fun runSilentLogin(
                 select {
                     confirmed.onAwait { it }
                     // A callback/renderer error must not beat an already usable API session.
-                    browser.onAwait { withTimeoutOrNull(4_000) { confirmed.await() } ?: false }
+                    browser.onAwait { withTimeoutOrNull(10_000) { confirmed.await() } ?: false }
                 }
             } finally {
                 confirmed.cancel()
@@ -81,7 +82,8 @@ private suspend fun interactWithLoginPage(
         val url = page.url
         if (url != null && url != "about:blank") {
             if (!SilentLoginUrls.allowed(url)) return
-            if (page.loaded && SchoolLoginScript.isTrustedLogin(url)) {
+            // DOM readiness is checked by the script. Slow images must not block a ready login form.
+            if (SchoolLoginScript.isTrustedLogin(url)) {
                 when (val step = page.inspect()) {
                     "manual" -> { onManualRequired(); return }
                     "refused" -> return

@@ -11,7 +11,15 @@ import org.junit.Test
 
 class SchoolLoginScriptTest {
     @Test fun `generated scripts handle school two-step form and reject unsafe documents`() {
-        val credentials = SchoolCredentials("test-only@example.invalid", "test-only'\\\n\"</script>")
+        checkScripts("test-only@example.invalid")
+    }
+
+    @Test fun `student id is propagated through the school domain normalization`() {
+        checkScripts("2026000000")
+    }
+
+    private fun checkScripts(account: String) {
+        val credentials = SchoolCredentials(account, "test-only'\\\n\"</script>")
         val harness = listOf(File("../tools/test-school-login.cjs"), File("tools/test-school-login.cjs"))
             .first { it.exists() }
         // Drain output independently of waitFor: Linux pipes can fill with assertion diagnostics.

@@ -27,10 +27,42 @@ class WebViewCookieInterceptor @Inject constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun intercept(chain: Interceptor.Chain): Response {
+        return bridgeWebViewCookies(chain,
+            readCookie = { url -> onMainThread { bridge.cookieHeader(url) } },
+            saveCookies = { url, cookies -> onMainThread { bridge.saveSetCookie(url, cookies) }; Unit })
+    }
+
+    private fun <T> onMainThread(block: () -> T): T? {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return runCatching(block).onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }.getOrNull()
+        }
+        var result: T? = null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        mainHandler.post {
+            result = runCatching(block)
+                .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
+                .getOrNull()
+            latch.countDown()
+        }
+        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+            AppLog.w("cookie bridge timed out")
+        }
+        return result
+    }
+}
+
+/** Session probes borrow cookies but must never replace a concurrent browser login's session. */
+internal object ReadOnlySessionCheck
+
+internal fun bridgeWebViewCookies(
+    chain: Interceptor.Chain,
+    readCookie: (String) -> String?,
+    saveCookies: (String, List<String>) -> Unit
+): Response {
         val original = chain.request()
         val url = original.url.toString()
 
-        val cookie = onMainThread { bridge.cookieHeader(url) }
+        val cookie = readCookie(url)
         val request = if (cookie.isNullOrBlank()) {
             original
         } else {
@@ -48,28 +80,8 @@ class WebViewCookieInterceptor @Inject constructor(
         val response = chain.proceed(request)
 
         val setCookies = response.headers("Set-Cookie")
-        if (setCookies.isNotEmpty()) {
-            onMainThread { bridge.saveSetCookie(url, setCookies) }
+        if (setCookies.isNotEmpty() && original.tag(ReadOnlySessionCheck::class.java) == null) {
+            saveCookies(url, setCookies)
         }
         return response
-    }
-
-    private fun <T> onMainThread(block: () -> T): T? {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            return runCatching(block).onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }.getOrNull()
-        }
-        var result: T? = null
-        val latch = java.util.concurrent.CountDownLatch(1)
-        mainHandler.post {
-            result = runCatching(block)
-                .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
-                .getOrNull()
-            latch.countDown()
-        }
-        // Never block a network thread forever if the main thread is wedged.
-        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
-            AppLog.w("cookie bridge timed out")
-        }
-        return result
-    }
 }

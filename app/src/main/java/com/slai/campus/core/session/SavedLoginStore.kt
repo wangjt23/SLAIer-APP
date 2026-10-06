@@ -9,24 +9,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.File
 import java.security.KeyStore
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.slai.campus.core.session.SavedLoginRecord as Record
 
 data class SavedLoginStatus(
     val saved: Boolean = false,
     val enabled: Boolean = false,
     val paused: Boolean = false,
-    val revision: Long = 0
+    val revision: Long = 0,
+    val retryAfter: Long = 0
 ) {
-    val canAttempt: Boolean get() = saved && enabled && !paused
+    val canAttempt: Boolean get() = canAttemptAt(System.currentTimeMillis())
+    fun canAttemptAt(now: Long): Boolean = saved && enabled && !paused && now >= retryAfter
 }
 
 // Deliberately not a data class: toString must never print credentials.
@@ -37,8 +36,6 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
     private val file = AtomicFile(File(context.noBackupFilesDir, "school-login.enc"))
     private val _status = MutableStateFlow(SavedLoginStatus())
     val status = _status.asStateFlow()
-
-    private class Record(val credentials: SchoolCredentials, val enabled: Boolean, val paused: Boolean, val revision: Long)
 
     init {
         // No plaintext is retained in a Flow, log, preferences or saved instance state.
@@ -60,26 +57,28 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
 
     suspend fun credentials(): SchoolCredentials? = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            read()?.takeIf { it.enabled && !it.paused }?.credentials
+            read()?.takeIf { it.canAttempt() }?.credentials
         }
     }
 
-    /** Persist before password submission, so a crash/restart cannot cause another attempt. */
+    /** A persisted cooldown survives crashes, without permanently disabling the next day's login. */
     suspend fun beginAttempt(): Boolean = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            val record = read()?.takeIf { it.enabled && !it.paused } ?: return@synchronized false
-            write(Record(record.credentials, record.enabled, true, record.revision))
+            val record = read()?.takeIf { it.canAttempt() } ?: return@synchronized false
+            write(Record(record.credentials, record.enabled, false, record.revision,
+                System.currentTimeMillis() + AUTOMATIC_LOGIN_RETRY_DELAY_MS))
             true
         }
     }
 
     suspend fun loginSucceeded() = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            read()?.let { write(Record(it.credentials, it.enabled, false, it.revision)) }
+            read()?.takeIf { it.paused || it.retryAfter != 0L }
+                ?.let { write(Record(it.credentials, it.enabled, false, it.revision)) }
         }
     }
 
-    /** Captcha, timeout and transport failures also require an explicit manual recovery. */
+    /** Only an explicit login error / challenge requires manual recovery; transport failures don't. */
     suspend fun pauseAutomaticLogin() = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
             read()?.let { write(Record(it.credentials, it.enabled, true, it.revision)) }
@@ -113,10 +112,7 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
         return runCatching {
             val plaintext = LoginCipher.decrypt(requireNotNull(key(false)), file.readFully())
             try {
-                DataInputStream(ByteArrayInputStream(plaintext)).use {
-                    require(it.readInt() == 1)
-                    Record(SchoolCredentials(it.readUTF(), it.readUTF()), it.readBoolean(), it.readBoolean(), it.readLong())
-                }
+                Record.decode(plaintext)
             } finally { plaintext.fill(0) }
         }.getOrElse {
             // Missing/invalid key or corrupt ciphertext: require explicit re-entry, never use stale data.
@@ -127,16 +123,7 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
     }
 
     private fun write(record: Record) {
-        val bytes = ByteArrayOutputStream().apply {
-            DataOutputStream(this).use {
-                it.writeInt(1)
-                it.writeUTF(record.credentials.username)
-                it.writeUTF(record.credentials.password)
-                it.writeBoolean(record.enabled)
-                it.writeBoolean(record.paused)
-                it.writeLong(record.revision)
-            }
-        }.toByteArray()
+        val bytes = record.encode()
         val encrypted = try { LoginCipher.encrypt(requireNotNull(key(true)), bytes) } finally { bytes.fill(0) }
         val output = file.startWrite()
         try {
@@ -150,8 +137,10 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
     }
 
     private fun publish(record: Record) {
-        _status.value = SavedLoginStatus(true, record.enabled, record.paused, record.revision)
+        _status.value = SavedLoginStatus(true, record.enabled, record.paused, record.revision, record.retryAfter)
     }
 
     private companion object { const val ALIAS = "slai-school-login-v1" }
 }
+
+internal const val AUTOMATIC_LOGIN_RETRY_DELAY_MS = 5 * 60_000L

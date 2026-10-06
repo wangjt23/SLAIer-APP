@@ -2,6 +2,7 @@ package com.slai.campus.data.stu
 
 import com.slai.campus.core.common.RemoteResult
 import com.slai.campus.core.network.StuApiClient
+import com.slai.campus.core.network.ReadOnlySessionCheck
 import com.slai.campus.core.session.SessionState
 import com.slai.campus.core.session.SessionStore
 import com.slai.campus.core.common.SchoolSystem
@@ -29,7 +30,9 @@ class StuAttendanceSessionVerifier @Inject constructor(
         withTimeoutOrNull(8_000) {
             val base = StuConfig.baseUrlOrDefault(store.baseUrl(SchoolSystem.STU))
             val month = StuAttendanceDataSource.monthOf(time.today())
-            checkAttendanceSessionCall(client.newCall(attendanceRequest(base, month)), month)
+            val request = attendanceRequest(base, month).newBuilder()
+                .tag(ReadOnlySessionCheck::class.java, ReadOnlySessionCheck).build()
+            checkAttendanceSessionCall(client.newCall(request), month)
         } ?: SessionState.ERROR
     }
 }

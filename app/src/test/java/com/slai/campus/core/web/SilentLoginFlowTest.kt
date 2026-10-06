@@ -117,7 +117,7 @@ class SilentLoginFlowTest {
     }
 
     @Test fun `cookies becoming usable during a stuck page finish promptly`() = runTest {
-        val page = Page().apply { loaded = false }
+        val page = Page().apply { loaded = false; step = "none" }
         assertThat(runSilentLogin(page, { error("no form loaded") }, { testScheduler.currentTime >= 2_000 })).isTrue()
         assertThat(testScheduler.currentTime).isLessThan(4_000)
     }
@@ -167,5 +167,22 @@ class SilentLoginFlowTest {
         assertThat(runSilentLogin(page, { error("no password") }, { false },
             authorizeCredentials = { false })).isFalse()
         assertThat(page.usernameSubmissions).isEqualTo(0)
+    }
+
+    @Test fun `six second successful attendance response is not cancelled at four seconds`() = runTest {
+        val page = Page().apply { url = "https://stu.slai.edu.cn/a/index" }
+        assertThat(runSilentLogin(page, { error("no password") }, { delay(6_000); true })).isTrue()
+        assertThat(testScheduler.currentTime).isEqualTo(6_000)
+    }
+
+    @Test fun `browser error still permits a slow successful confirmation`() = runTest {
+        val page = Page().apply { step = "refused" }
+        assertThat(runSilentLogin(page, { error("no password") }, { delay(6_000); true })).isTrue()
+    }
+
+    @Test fun `ready DOM can log in before slow images finish loading`() = runTest {
+        val page = Page().apply { loaded = false }
+        assertThat(runSilentLogin(page, { true }, { page.url == "https://stu.slai.edu.cn/a/index" })).isTrue()
+        assertThat(page.passwordSubmissions).isEqualTo(1)
     }
 }

@@ -26,7 +26,8 @@ object SchoolLoginScript {
                     (/^\/adfs\/ls(?:\/|${'$'})/i.test(u.pathname) || /^\/adfs\/oauth2\/authorize${'$'}/i.test(u.pathname));
             }
             if (window.top !== window || !trusted(new URL(window.location.href))) return 'refused';
-            function visible(e) { return e && !e.disabled && e.getClientRects().length > 0; }
+            if (document.readyState === 'loading') return 'none';
+            function visible(e) { return e && !e.disabled && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden'; }
             function find(selector) { return Array.from(document.querySelectorAll(selector)).find(visible); }
             if (find('input[name*="captcha" i], input[id*="captcha" i], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], input[autocomplete="one-time-code"]')) return 'manual';
             if (Array.from(document.querySelectorAll('#errorText, #error, .alert-danger, [role="alert"]')).some(function(e) {
@@ -39,7 +40,7 @@ object SchoolLoginScript {
             // The school's paginated AD FS Next span lives outside the username form.
             var button = document.getElementById(password ? 'submitButton' : 'nextButton');
             if (!visible(button)) button = Array.from(field.form.querySelectorAll('#submitButton, #idSIButton9, #nextButton, #next, button[type="submit"], input[type="submit"]')).find(visible);
-            if (!button) return 'manual';
+            if (!button) return 'none';
             var mode = '$mode';
             if (mode === 'inspect') return password ? 'password' : 'username';
             if ((mode === 'password') !== !!password) return 'none';
@@ -51,6 +52,14 @@ object SchoolLoginScript {
                 e.dispatchEvent(new Event('change', {bubbles: true}));
             }
             if (username) fill(username, account);
+            if (password) {
+                // AD FS keeps the username in a separate, now hidden page AND a hidden POST field.
+                // A resumed password page can otherwise submit an empty or previously used account.
+                var original = document.getElementById('userNameInput');
+                var holder = document.getElementById('userNameInputHolder');
+                if (original && original.form && trusted(new URL(original.form.action || window.location.href, window.location.href))) fill(original, account);
+                if (holder && holder.form === password.form) fill(holder, account);
+            }
             if (password) fill(password, secret);
             // The school's persistent-session control is optional; cookie expiry stays server-owned.
             var keep = find('#kmsiInput, input[name="Kmsi"]');

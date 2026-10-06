@@ -33,6 +33,7 @@ import com.slai.campus.core.web.AutomaticLoginState
 import com.slai.campus.core.web.SilentSchoolLogin
 import com.slai.campus.core.session.awaitAutomaticLoginResult
 import com.slai.campus.core.session.recoverAttendanceSession
+import com.slai.campus.core.session.AutomaticLoginTrigger
 import com.slai.campus.data.stu.StuAttendanceSessionVerifier
 import javax.inject.Inject
 
@@ -59,11 +60,13 @@ class MainViewModel @Inject constructor(
     val session: StateFlow<SessionSnapshot> = sessionManager.state
     val savedLogin = savedLoginStore.status
     private var automaticLoginRevision: Long? = null
+    private val automaticLoginTrigger = AutomaticLoginTrigger()
     private var automaticLoginJob: Job? = null
     private val _automaticLoginState = MutableStateFlow(AutomaticLoginState.IDLE)
     val automaticLoginState = _automaticLoginState.asStateFlow()
 
     fun stopAutomaticLogin() {
+        automaticLoginTrigger.update(false, savedLogin.value.revision)
         automaticLoginJob?.cancel()
         if (_automaticLoginState.value == AutomaticLoginState.RUNNING) {
             _automaticLoginState.value = AutomaticLoginState.IDLE
@@ -73,17 +76,18 @@ class MainViewModel @Inject constructor(
     /** Called by the foreground root; this never creates a visible navigation overlay. */
     fun updateAutomaticLogin(foregroundAvailable: Boolean) {
         val status = savedLogin.value
+        automaticLoginTrigger.update(foregroundAvailable && status.enabled && status.saved, status.revision)
         if (!foregroundAvailable || !status.enabled || !status.saved) {
             stopAutomaticLogin()
             _automaticLoginState.value = AutomaticLoginState.IDLE
             return
         }
         if (automaticLoginJob?.isCompleted == false) {
-            if (automaticLoginRevision != status.revision) stopAutomaticLogin()
+            if (automaticLoginRevision != status.revision) automaticLoginJob?.cancel()
             return
         }
-        if (session.value.stu !in setOf(SessionState.EXPIRED, SessionState.NEEDS_LOGIN)) return
-        if (!claimAutomaticLogin()) return
+        if (!automaticLoginTrigger.claim(session.value.stu, System.currentTimeMillis())) return
+        automaticLoginRevision = status.revision
         automaticLoginJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
             fun freshlyAuthenticated() = sessionManager.authenticationVersion(SchoolSystem.STU) > authenticationVersion
@@ -106,10 +110,8 @@ class MainViewModel @Inject constructor(
                                     // An actual login form appeared after cookie-only SSO recovery.
                                     // Check again before sending credentials or showing a login notice.
                                     if (verifyAttendanceSession() != SessionState.EXPIRED) false
-                                    else if (!savedLogin.value.canAttempt) {
-                                        manualRequired = true
-                                        false
-                                    } else {
+                                    else if (!savedLogin.value.canAttempt) false
+                                    else {
                                         usingCredentials = true
                                         _automaticLoginState.value = AutomaticLoginState.RUNNING
                                         true
@@ -120,13 +122,13 @@ class MainViewModel @Inject constructor(
                         }
                     }
                 )
-                if (!succeeded && !freshlyAuthenticated() && (usingCredentials || manualRequired)) {
+                if (!succeeded && !freshlyAuthenticated() && manualRequired) {
                     savedLoginStore.pauseAutomaticLogin()
                 }
                 // Recheck after the disk write: a concurrent attendance response may have just succeeded.
                 if (succeeded || freshlyAuthenticated()) {
                     cookieBridge.flush()
-                    if (usingCredentials) savedLoginStore.loginSucceeded()
+                    savedLoginStore.loginSucceeded()
                     automaticLoginRevision = null
                     _automaticLoginState.value = if (usingCredentials) AutomaticLoginState.SUCCEEDED else AutomaticLoginState.IDLE
                     if (recoveringSession) viewModelScope.launch { refreshAttendanceAfterLogin() }
@@ -138,11 +140,11 @@ class MainViewModel @Inject constructor(
             } catch (error: Exception) {
                 AppLog.w("automatic login failed: ${error.javaClass.simpleName}")
                 if (freshlyAuthenticated()) {
-                    if (usingCredentials) runCatching { savedLoginStore.loginSucceeded() }
+                    runCatching { savedLoginStore.loginSucceeded() }
                     automaticLoginRevision = null
                     _automaticLoginState.value = if (usingCredentials) AutomaticLoginState.SUCCEEDED else AutomaticLoginState.IDLE
                 } else {
-                    if (usingCredentials || manualRequired) runCatching { savedLoginStore.pauseAutomaticLogin() }
+                    if (manualRequired) runCatching { savedLoginStore.pauseAutomaticLogin() }
                     _automaticLoginState.value = if (usingCredentials || manualRequired) AutomaticLoginState.FAILED else AutomaticLoginState.IDLE
                 }
             } finally {
@@ -150,8 +152,10 @@ class MainViewModel @Inject constructor(
                     _automaticLoginState.value = AutomaticLoginState.IDLE
                 }
                 automaticLoginJob = null
-                // Transport/unknown failures did not attempt a password; a later foreground check may retry.
-                if (!usingCredentials && !manualRequired) automaticLoginRevision = null
+                automaticLoginRevision = null
+                automaticLoginTrigger.finish()
+                // A foreground entry or settings change may have arrived during cancellation.
+                updateAutomaticLogin(automaticLoginTrigger.available)
             }
         }
         automaticLoginJob?.start()
@@ -173,14 +177,6 @@ class MainViewModel @Inject constructor(
             sessionManager.set(SchoolSystem.STU, result)
         }
         return result
-    }
-
-    /** Do not reopen a dismissed flow during recomposition or an activity recreation. */
-    fun claimAutomaticLogin(): Boolean {
-        val status = savedLogin.value
-        if (!status.saved || !status.enabled || automaticLoginRevision == status.revision) return false
-        automaticLoginRevision = status.revision
-        return true
     }
 
     suspend fun automaticStuEntry(): String? {
