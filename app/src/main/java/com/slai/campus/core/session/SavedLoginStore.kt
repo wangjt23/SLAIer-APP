@@ -16,6 +16,7 @@ import javax.crypto.SecretKey
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.slai.campus.core.session.SavedLoginRecord as Record
+import com.slai.campus.core.common.SchoolSystem
 
 data class SavedLoginStatus(
     val saved: Boolean = false,
@@ -49,39 +50,45 @@ class SavedLoginStore @Inject constructor(@ApplicationContext context: Context) 
         }
     }
 
-    suspend fun setEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+    suspend fun setEnabled(enabled: Boolean, system: SchoolSystem = SchoolSystem.STU) = withContext(Dispatchers.IO) {
+        if (system != SchoolSystem.STU) return@withContext
         synchronized(this@SavedLoginStore) {
             read()?.let { write(Record(it.credentials, enabled, false, System.currentTimeMillis())) }
         }
     }
 
-    suspend fun credentials(): SchoolCredentials? = withContext(Dispatchers.IO) {
+    suspend fun credentials(expectedRevision: Long? = null): SchoolCredentials? = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            read()?.takeIf { it.canAttempt() }?.credentials
+            read()?.takeIf { (expectedRevision == null || it.revision == expectedRevision) && it.canAttempt() }?.credentials
         }
     }
 
     /** A persisted cooldown survives crashes, without permanently disabling the next day's login. */
-    suspend fun beginAttempt(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun beginAttempt(expectedRevision: Long? = null): Boolean = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            val record = read()?.takeIf { it.canAttempt() } ?: return@synchronized false
+            val record = read()?.takeIf {
+                (expectedRevision == null || it.revision == expectedRevision) && it.canAttempt()
+            } ?: return@synchronized false
             write(Record(record.credentials, record.enabled, false, record.revision,
                 System.currentTimeMillis() + AUTOMATIC_LOGIN_RETRY_DELAY_MS))
             true
         }
     }
 
-    suspend fun loginSucceeded() = withContext(Dispatchers.IO) {
+    suspend fun loginSucceeded(system: SchoolSystem = SchoolSystem.STU, expectedRevision: Long? = null) = withContext(Dispatchers.IO) {
+        if (system != SchoolSystem.STU) return@withContext
         synchronized(this@SavedLoginStore) {
-            read()?.takeIf { it.paused || it.retryAfter != 0L }
+            read()?.takeIf { (expectedRevision == null || it.revision == expectedRevision) &&
+                (it.paused || it.retryAfter != 0L) }
                 ?.let { write(Record(it.credentials, it.enabled, false, it.revision)) }
         }
     }
 
     /** Only an explicit login error / challenge requires manual recovery; transport failures don't. */
-    suspend fun pauseAutomaticLogin() = withContext(Dispatchers.IO) {
+    suspend fun pauseAutomaticLogin(expectedRevision: Long? = null) = withContext(Dispatchers.IO) {
         synchronized(this@SavedLoginStore) {
-            read()?.let { write(Record(it.credentials, it.enabled, true, it.revision)) }
+            read()?.takeIf { expectedRevision == null || it.revision == expectedRevision }
+                ?.let { write(Record(it.credentials, it.enabled, true, it.revision)) }
         }
     }
 

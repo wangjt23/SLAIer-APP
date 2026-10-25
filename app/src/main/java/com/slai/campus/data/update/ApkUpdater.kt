@@ -9,11 +9,15 @@ import android.content.pm.PackageManager.NameNotFoundException
 import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.network.UpdateClient
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -51,47 +55,63 @@ class ApkDownloader @Inject constructor(
         onProgress: (received: Long, total: Long) -> Unit
     ): DownloadOutcome = withContext(Dispatchers.IO) {
         val target = targetFile(fileName)
-        val temp = File(target.parentFile, "$fileName.part")
-        temp.delete()
+        // A cancelled call can still be unwinding on an OkHttp thread when a retry starts.
+        // Give each call its own temporary file so that old cleanup cannot delete the new download.
+        val temp = File.createTempFile("$fileName.", ".part", target.parentFile)
 
         try {
             val request = Request.Builder().url(url).header("User-Agent", "SLAIer-Android").get().build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext DownloadOutcome.Failed("HTTP ${response.code}")
-                }
-                val body = response.body ?: return@withContext DownloadOutcome.Failed("响应为空")
-                val total = body.contentLength()
-                val digest = MessageDigest.getInstance("SHA-256")
-                var received = 0L
+            val call = client.newCall(request)
+            val result = call.readUpdateResponse { response ->
+                try {
+                    if (!response.isSuccessful) {
+                        return@readUpdateResponse DownloadOutcome.Failed("HTTP ${response.code}")
+                    }
+                    val body = response.body ?: return@readUpdateResponse DownloadOutcome.Failed("响应为空")
+                    val total = body.contentLength()
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    var received = 0L
 
-                body.byteStream().use { input ->
-                    temp.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            output.write(buffer, 0, read)
-                            digest.update(buffer, 0, read)
-                            received += read
-                            onProgress(received, if (total > 0) total else -1L)
+                    body.byteStream().use { input ->
+                        temp.outputStream().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                if (call.isCanceled()) throw IOException("cancelled")
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+                                if (call.isCanceled()) throw IOException("cancelled")
+                                output.write(buffer, 0, read)
+                                digest.update(buffer, 0, read)
+                                received += read
+                                onProgress(received, if (total > 0) total else -1L)
+                            }
                         }
                     }
-                }
 
-                val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                if (!temp.renameTo(target)) {
-                    temp.copyTo(target, overwrite = true)
+                    if (call.isCanceled()) throw IOException("cancelled")
+                    val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                    DownloadOutcome.Ok(DownloadedApk(temp, hash, received))
+                } catch (error: Exception) {
+                    // This callback can finish after its coroutine's finally has already run.
                     temp.delete()
+                    throw error
                 }
-                AppLog.i("update apk downloaded: $fileName ($received bytes)")
-                DownloadOutcome.Ok(DownloadedApk(target, hash, received))
             }
+            if (result is DownloadOutcome.Ok) {
+                // Only the owning coroutine may publish the final file. A cancelled OkHttp
+                // callback must never rename an older partial download over a completed retry.
+                currentCoroutineContext().ensureActive()
+                if (!temp.renameTo(target)) temp.copyTo(target, overwrite = true)
+                AppLog.i("update apk downloaded: $fileName (${result.apk.bytes} bytes)")
+                result.copy(apk = result.apk.copy(file = target))
+            } else result
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             temp.delete()
             AppLog.w("update download failed: ${e.javaClass.simpleName}")
             DownloadOutcome.Failed(e.javaClass.simpleName)
-        }
+        } finally { temp.delete() }
     }
 
     /** 清掉上一次留下的安装包（安装完成或用户取消后调用）。 */
@@ -204,7 +224,7 @@ class ApkVerifier @Inject constructor(
 
 /** 安装调起失败的原因。 */
 sealed interface InstallStart {
-    data object Started : InstallStart
+    data class Started(val sessionId: Int) : InstallStart
     data object NeedsPermission : InstallStart
     data class Failed(val reason: String) : InstallStart
 }
@@ -223,7 +243,7 @@ class ApkInstaller @Inject constructor(
 
     fun canInstall(): Boolean = context.packageManager.canRequestPackageInstalls()
 
-    suspend fun install(file: File): InstallStart = withContext(Dispatchers.IO) {
+    suspend fun install(file: File, onCommitted: (Int) -> Unit): InstallStart = withContext(Dispatchers.IO) {
         if (!canInstall()) return@withContext InstallStart.NeedsPermission
 
         val installer = context.packageManager.packageInstaller
@@ -242,15 +262,28 @@ class ApkInstaller @Inject constructor(
             installer.openSession(sessionId).use { session ->
                 file.inputStream().use { input ->
                     session.openWrite("base.apk", 0, file.length()).use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val size = input.read(buffer)
+                            if (size < 0) break
+                            output.write(buffer, 0, size)
+                        }
                         session.fsync(output)
                     }
                 }
-                val intent = UpdateInstallReceiver.statusIntent(context)
+                currentCoroutineContext().ensureActive()
+                val intent = UpdateInstallReceiver.statusIntent(context, sessionId)
                 session.commit(intent)
+                // commit hands ownership to Android. Record it before leaving IO, even if the
+                // caller is cancelled just as this dispatcher returns to the UI.
+                onCommitted(sessionId)
             }
             AppLog.i("update install session committed: $sessionId")
-            InstallStart.Started
+            InstallStart.Started(sessionId)
+        } catch (cancelled: CancellationException) {
+            runCatching { installer.abandonSession(sessionId) }
+            throw cancelled
         } catch (e: Exception) {
             runCatching { installer.abandonSession(sessionId) }
             AppLog.w("install session failed: ${e.javaClass.simpleName}")

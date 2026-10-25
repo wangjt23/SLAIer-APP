@@ -2,7 +2,7 @@ package com.slai.campus.feature.attendance
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.CloudOff
@@ -24,15 +25,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -53,6 +53,9 @@ import com.slai.campus.domain.attendance.DailyAttendance
 import com.slai.campus.ui.currentLocale
 import com.slai.campus.ui.datePatternFor
 import com.slai.campus.navigation.AppNavigator
+import com.slai.campus.ui.components.ScrollChromePage
+import com.slai.campus.ui.components.ScrollChromeRefreshBox
+import com.slai.campus.ui.components.rememberScrollEndDistance
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -70,11 +73,16 @@ fun AttendanceScreen(
     viewModel: AttendanceViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
     val dayFormatter = DateTimeFormatter.ofPattern(datePatternFor(currentLocale(), withWeekday = false), currentLocale())
 
-    Scaffold(
+    ScrollChromePage(
+        canScrollBackward = listState.canScrollBackward,
+        canScrollForward = listState.canScrollForward,
+        distanceToEndPx = rememberScrollEndDistance(listState),
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = {
                     Column {
                         Text(stringResource(R.string.attendance_title))
@@ -99,14 +107,16 @@ fun AttendanceScreen(
             )
         }
     ) { padding ->
-        PullToRefreshBox(
+        ScrollChromeRefreshBox(
             isRefreshing = state.refreshing,
             onRefresh = viewModel::refresh,
-            modifier = Modifier.fillMaxSize().padding(padding)
+            topPadding = padding.calculateTopPadding() - 16.dp,
+            modifier = Modifier.fillMaxSize()
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = padding,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (state.stuNeedsLogin) {
@@ -128,11 +138,7 @@ fun AttendanceScreen(
                 }
 
                 item {
-                    Text(
-                        text = stringResource(R.string.attendance_month_detail),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    AttendanceMonthDetailHeading()
                 }
 
                 when {
@@ -285,11 +291,21 @@ private fun MonthSummaryCard(state: AttendanceUiState) {
     }
 }
 
+@Composable
+internal fun AttendanceMonthDetailHeading(modifier: Modifier = Modifier) {
+    Text(
+        text = stringResource(R.string.attendance_month_detail),
+        modifier = modifier,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold
+    )
+}
+
 /** Weekly count of the school's qualified daily records, without guessing a weekly target. */
 @Composable
-private fun WeekHeader(week: AttendanceWeek, formatter: DateTimeFormatter) {
+internal fun WeekHeader(week: AttendanceWeek, formatter: DateTimeFormatter, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -335,7 +351,7 @@ private fun StatCell(label: String, value: String) {
 }
 
 @Composable
-private fun TodayCard(state: AttendanceUiState) {
+internal fun TodayCard(state: AttendanceUiState) {
     val formatter = DateTimeFormatter.ofPattern(datePatternFor(currentLocale()), currentLocale())
     val today = state.today
     val goalText = AttendanceRecord.formatMinutes(state.dailyGoalMinutes, state.locale)
@@ -350,6 +366,8 @@ private fun TodayCard(state: AttendanceUiState) {
             }
         )
     ) {
+        // Each possible card background supplies its own matching foreground color.
+        val cardContentColor = LocalContentColor.current
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -357,16 +375,24 @@ private fun TodayCard(state: AttendanceUiState) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "今天 · ${state.todayDate.format(formatter)}",
+                    text = stringResource(R.string.attendance_day_heading, state.todayDate.format(formatter)),
                     style = MaterialTheme.typography.titleMedium
                 )
-                if (today?.isCurrentlyInside == true) {
+                if (state.currentlyInside) {
                     Text(
                         text = "在馆中",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = cardContentColor
                     )
                 }
+            }
+
+            if (state.todayDate.isBefore(state.nowDateTime.toLocalDate())) {
+                Text(
+                    text = stringResource(R.string.attendance_overnight_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cardContentColor
+                )
             }
 
             // The number the user actually cares about: accumulated check-in time today.
@@ -383,7 +409,7 @@ private fun TodayCard(state: AttendanceUiState) {
                 Text(
                     text = "/ $goalText",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = cardContentColor,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
             }
@@ -405,13 +431,13 @@ private fun TodayCard(state: AttendanceUiState) {
                         else stringResource(R.string.attendance_goal_reached)
                     } ?: stringResource(R.string.attendance_no_record_today),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = cardContentColor
                 )
                 today?.takeUnless { it.leave == true }?.durationText?.let {
                     Text(
                         text = stringResource(R.string.attendance_school_record, it),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = cardContentColor
                     )
                 }
             }
@@ -420,7 +446,7 @@ private fun TodayCard(state: AttendanceUiState) {
                 Text(
                     text = stringResource(R.string.attendance_no_day_data),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = cardContentColor
                 )
             } else {
                 // 今天的每一段在馆（由闸机流水配对算出）
@@ -449,7 +475,7 @@ private fun TodayCard(state: AttendanceUiState) {
                                         Text(
                                             text = "在馆中",
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary
+                                            color = cardContentColor
                                         )
                                     }
                                 }
@@ -463,7 +489,7 @@ private fun TodayCard(state: AttendanceUiState) {
                         Text(
                             text = "共 ${state.sessions.size} 段，累计 ${state.todayMinutesText ?: "0 分钟"}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = cardContentColor
                         )
                     }
                 } else {
@@ -497,7 +523,7 @@ private fun TodayCard(state: AttendanceUiState) {
                     Text(
                         text = chips.joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = cardContentColor
                     )
                 }
             }
@@ -536,7 +562,7 @@ private fun SwipeCell(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current)
         }
         Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
@@ -575,7 +601,8 @@ private fun DayCard(
                         fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal
                     )
                     if (isToday) {
-                        Text("今天", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(stringResource(R.string.attendance_current_day), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 Text(

@@ -3,6 +3,8 @@ package com.slai.campus.data.provider
 import com.slai.campus.core.common.RemoteResult
 import com.slai.campus.data.sis.SisKbItem
 import com.slai.campus.data.sis.SisScheduleNormalizer
+import com.slai.campus.data.sis.SisScheduleParser
+import com.slai.campus.data.sis.validateTimetable
 import com.slai.campus.data.sis.SisTimetableParsed
 import com.slai.campus.data.sis.SisTimetableResponse
 import com.slai.campus.domain.provider.ApiProvider
@@ -15,6 +17,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import java.time.LocalTime
 
 /**
  * Turns a provider's JSON response into dated [com.slai.campus.domain.schedule.ClassOccurrence]s.
@@ -39,13 +42,20 @@ object GenericTimetableParser {
         provider: ApiProvider,
         semester: Semester,
         accountHash: String,
-        source: ScheduleSource
+        source: ScheduleSource,
+        periodTimes: List<Pair<LocalTime, LocalTime>>? = null
     ): RemoteResult<SisTimetableParsed> {
         val text = body?.trim().orEmpty()
         if (text.isEmpty()) return RemoteResult.SchemaChanged("响应为空")
 
         val root = runCatching { json.parseToJsonElement(text) }.getOrNull()
             ?: return RemoteResult.SchemaChanged("JSON 无法解析（可能返回的是 HTML）")
+        // Default or auto-learned ZFSoft mappings use all the native metadata and validation,
+        // including profile-only identity. Explicit custom row keys retain the generic path.
+        if (provider.rowsPath == "kbList" && root is JsonObject &&
+            provider.resolvedFieldMap() == Fields.ZFSOFT_DEFAULTS) {
+            return SisScheduleParser.parse(text, semester, source, accountHash, periodTimes)
+        }
 
         val rows = resolveRows(root, provider.rowsPath)
             ?: return RemoteResult.SchemaChanged(
@@ -53,21 +63,29 @@ object GenericTimetableParser {
                     "顶层字段=${(root as? JsonObject)?.keys?.take(8)?.joinToString(",") ?: "array"}"
             )
 
+        val items = rows.mapNotNull { element -> (element as? JsonObject)?.let { toItem(it, provider) } }
+        val validation = validateTimetable(root as? JsonObject, items.map { it.studentId }, semester)
+        validation.error?.let { return RemoteResult.SchemaChanged(it) }
+
         if (rows.isEmpty()) {
-            // An empty array from a *recognised* shape is a genuine empty timetable.
+            // Learned ZFSoft providers can prove an empty semester through the same metadata
+            // validation as the native endpoint. An arbitrary empty array cannot prove it.
+            if (provider.rowsPath == "kbList" && root is JsonObject) {
+                return SisScheduleParser.parse(text, semester, source, accountHash, periodTimes)
+            }
             return RemoteResult.Success(
                 SisTimetableParsed(
                     occurrences = emptyList(),
                     response = SisTimetableResponse(kbList = emptyList()),
                     rawItemCount = 0,
                     skippedRows = 0,
-                    studentId = null,
-                    warning = null
+                    studentId = validation.studentId,
+                    warning = null,
+                    reportedTerm = validation.reportedTerm
                 )
             )
         }
 
-        val items = rows.mapNotNull { element -> (element as? JsonObject)?.let { toItem(it, provider) } }
         if (items.isEmpty()) {
             return RemoteResult.SchemaChanged("课程数组存在，但每一行都不是对象")
         }
@@ -78,7 +96,8 @@ object GenericTimetableParser {
             semester = semester,
             response = response,
             source = source,
-            accountHash = accountHash
+            accountHash = accountHash,
+            periodTimes = periodTimes
         )
 
         if (normalized.occurrences.isEmpty()) {
@@ -88,16 +107,15 @@ object GenericTimetableParser {
             )
         }
 
-        val studentId = items.firstNotNullOfOrNull { it.studentId?.takeIf { v -> v.isNotBlank() } }
-
         return RemoteResult.Success(
             SisTimetableParsed(
                 occurrences = normalized.occurrences,
                 response = response,
                 rawItemCount = items.size,
                 skippedRows = normalized.skipped,
-                studentId = studentId,
-                warning = normalized.warning
+                studentId = validation.studentId,
+                warning = normalized.warning,
+                reportedTerm = validation.reportedTerm
             )
         )
     }

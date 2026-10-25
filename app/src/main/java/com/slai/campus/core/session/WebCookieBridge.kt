@@ -2,6 +2,9 @@ package com.slai.campus.core.session
 
 import android.webkit.CookieManager
 import com.slai.campus.core.common.AppLog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -19,23 +22,51 @@ import javax.inject.Singleton
 @Singleton
 class WebCookieBridge @Inject constructor() {
 
+    private val guard = CookieSessionGuard()
+    private val observedUrls = mutableMapOf<String, LinkedHashSet<String>>()
+
     private val cookieManager: CookieManager
         get() = CookieManager.getInstance()
 
     /** Cookies that would be sent to [url], or null when there are none. Main thread only. */
-    fun cookieHeader(url: String): String? =
-        runCatching { cookieManager.getCookie(url) }
+    fun cookieHeader(url: String): String? {
+        rememberUrl(url)
+        return runCatching { cookieManager.getCookie(url) }
             .onFailure { AppLog.w("getCookie failed: ${it.javaClass.simpleName}") }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
+    }
 
-    /** Stores `Set-Cookie` values that OkHttp saw, so the WebView stays in sync. */
-    fun saveSetCookie(url: String, setCookieHeaders: List<String>) {
-        if (setCookieHeaders.isEmpty()) return
-        runCatching {
-            setCookieHeaders.forEach { raw -> cookieManager.setCookie(url, raw) }
-            cookieManager.flush()
-        }.onFailure { AppLog.w("setCookie failed: ${it.javaClass.simpleName}") }
+    /** Guard the complete browser lifetime, including redirects, XHR and async Cookie updates. */
+    fun beginBrowserNavigation(host: String? = null, onInvalidated: () -> Unit = {}): AutoCloseable {
+        val browser = guard.beginBrowser(host, onInvalidated)
+        return AutoCloseable { guard.endBrowser(browser) }
+    }
+
+    /** Main thread only: stop older views before a new explicit login can establish its cookies. */
+    fun cancelBrowserNavigations(host: String) { guard.invalidate(host) }
+
+    internal fun requestSnapshotBlocking(url: String): CookieRequestSnapshot? =
+        onMain { url.toHttpUrlOrNull()?.let { guard.snapshot(it.host, cookieHeader(url)) } }
+
+    internal fun saveIfUnchangedBlocking(url: String, snapshot: CookieRequestSnapshot?, headers: List<String>) {
+        if (snapshot == null || headers.isEmpty()) return
+        onMain {
+            if (snapshot.host == url.toHttpUrlOrNull()?.host && guard.claimWrite(snapshot, cookieHeader(url))) {
+                // Two-argument setCookie is synchronous in Android WebView. Using the callback
+                // overload here would release the main-thread guard before the write completes.
+                headers.forEach { cookieManager.setCookie(url, it) }
+                cookieManager.flush()
+            }
+        }
+    }
+
+    private fun rememberUrl(url: String) {
+        val parsed = url.toHttpUrlOrNull() ?: return
+        // Store paths only, never login query strings, tokens or Cookie values.
+        val urls = observedUrls.getOrPut(parsed.host) { linkedSetOf() }
+        urls += "${parsed.scheme}://${parsed.host}${parsed.encodedPath}"
+        if (urls.size > 256) urls.remove(urls.first())
     }
 
     /** True when any cookie exists for [url]. Used as a cheap "did login leave anything behind". */
@@ -75,7 +106,7 @@ class WebCookieBridge @Inject constructor() {
     // Background-thread access
     // ---------------------------------------------------------------------------------------
 
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     /**
      * [cookieHeader] for callers that are not on the main thread.
@@ -86,56 +117,45 @@ class WebCookieBridge @Inject constructor() {
      */
     fun cookieHeaderBlocking(url: String): String? = onMain { cookieHeader(url) }
 
-    /** [saveSetCookie] for callers that are not on the main thread. */
-    fun saveSetCookieBlocking(url: String, setCookieHeaders: List<String>) {
-        if (setCookieHeaders.isEmpty()) return
-        onMain { saveSetCookie(url, setCookieHeaders) }
-    }
-
     private fun <T> onMain(block: () -> T): T? {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
             return runCatching(block)
                 .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
                 .getOrNull()
         }
-        var result: T? = null
+        val result = java.util.concurrent.atomic.AtomicReference<T?>(null)
+        val abandoned = java.util.concurrent.atomic.AtomicBoolean(false)
         val latch = java.util.concurrent.CountDownLatch(1)
-        mainHandler.post {
-            result = runCatching(block)
-                .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
-                .getOrNull()
-            latch.countDown()
+        val task = Runnable {
+            try {
+                if (!abandoned.get()) result.set(runCatching(block)
+                    .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
+                    .getOrNull())
+            } finally { latch.countDown() }
         }
-        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+        if (!mainHandler.post(task)) return null
+        try {
+            if (latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) return result.get()
             AppLog.w("cookie bridge timed out")
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            // A timed-out request must not enqueue a Cookie write that runs after a later login.
+            abandoned.set(true)
+            mainHandler.removeCallbacks(task)
         }
-        return result
+        return null
     }
 
     /**
      * Removes cookies for one host. Called when the user explicitly signs out; the app never does
      * this automatically, because silently dropping a valid session would be user-hostile.
      */
-    fun clearHostCookies(host: String) {
-        val manager = cookieManager
-        runCatching {
-            val cookies = manager.getCookie("https://$host") ?: return
-            cookies.split(';').map { it.substringBefore('=').trim() }
-                .filter { it.isNotEmpty() }
-                .forEach { name ->
-                    // Expire each cookie on the exact paths the school uses.
-                    listOf("/", "/yjsxt", "/sso", "/adfs").forEach { path ->
-                        manager.setCookie("https://$host", "$name=; Max-Age=0; Path=$path")
-                    }
-                }
-            manager.flush()
-        }.onFailure { AppLog.w("clearHostCookies failed: ${it.javaClass.simpleName}") }
-    }
-
-    fun clearAll() {
-        runCatching {
-            cookieManager.removeAllCookies(null)
-            cookieManager.flush()
-        }.onFailure { AppLog.w("clearAll failed: ${it.javaClass.simpleName}") }
+    suspend fun clearHostCookiesAndAwait(host: String) = withContext(Dispatchers.Main.immediate) {
+        cancelBrowserNavigations(host)
+        val paths = HostCookieCleanup.paths(observedUrls[host].orEmpty())
+        val removals = HostCookieCleanup.removals(host, paths, ::cookieHeader)
+        removals.forEach { cookieManager.setCookie(it.url, it.value) }
+        cookieManager.flush()
     }
 }

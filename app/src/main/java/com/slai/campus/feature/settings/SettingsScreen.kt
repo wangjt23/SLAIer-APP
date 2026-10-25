@@ -3,6 +3,7 @@ package com.slai.campus.feature.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -23,7 +24,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -59,6 +59,8 @@ import com.slai.campus.domain.update.UpdateState
 import com.slai.campus.domain.update.ReleaseNotes
 import com.slai.campus.domain.update.UpdateFailure
 import com.slai.campus.navigation.AppNavigator
+import com.slai.campus.ui.components.ScrollChromePage
+import com.slai.campus.ui.components.rememberScrollEndDistance
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -79,6 +81,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val savedLogin by viewModel.savedLogin.collectAsStateWithLifecycle()
+    val savedLoginRetrySeconds by viewModel.savedLoginRetrySeconds.collectAsStateWithLifecycle()
     val savedLoginError by viewModel.savedLoginError.collectAsStateWithLifecycle()
     var showLoginDialog by remember { mutableStateOf(false) }
     val updateState by updateViewModel.state.collectAsStateWithLifecycle()
@@ -91,16 +94,19 @@ fun SettingsScreen(
     var showAnchorPicker by remember { mutableStateOf(false) }
     var weekInput by remember { mutableStateOf("") }
     var showWeekDialog by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.settings_title)) }) }
+    ScrollChromePage(
+        canScrollBackward = scrollState.canScrollBackward,
+        canScrollForward = scrollState.canScrollForward,
+        distanceToEndPx = rememberScrollEndDistance(scrollState),
+        topBar = { TopAppBar(title = { Text(stringResource(R.string.settings_title)) }, windowInsets = WindowInsets(0)) }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .verticalScroll(scrollState)
+                .padding(padding),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // ---- sessions ------------------------------------------------------------------
@@ -130,7 +136,12 @@ fun SettingsScreen(
                     Text(stringResource(R.string.saved_login_summary), style = MaterialTheme.typography.bodySmall)
                     if (savedLogin.saved) {
                         SettingRow(title = stringResource(R.string.saved_login_enable),
-                            summary = stringResource(if (savedLogin.paused) R.string.saved_login_paused else R.string.saved_login_stored)) {
+                            summary = when {
+                                savedLogin.paused -> stringResource(R.string.saved_login_paused)
+                                savedLogin.enabled && savedLoginRetrySeconds > 0 ->
+                                    com.slai.campus.ui.components.savedLoginCooldownText(savedLoginRetrySeconds)
+                                else -> stringResource(R.string.saved_login_stored)
+                            }) {
                             Switch(checked = savedLogin.enabled, onCheckedChange = viewModel::setSavedLoginEnabled)
                         }
                     }
@@ -586,6 +597,7 @@ private fun UpdateSection(state: UpdateUiState, viewModel: UpdateViewModel) {
     val failed = state.state as? UpdateState.Failed
     val available = state.state as? UpdateState.Available
     val downloading = state.state as? UpdateState.Downloading
+    val ready = state.state as? UpdateState.ReadyToInstall
 
     SettingRow(
         title = stringResource(R.string.settings_auto_update_check),
@@ -649,6 +661,12 @@ private fun UpdateSection(state: UpdateUiState, viewModel: UpdateViewModel) {
         }
     }
 
+    if (ready != null) {
+        Button(onClick = viewModel::downloadAndInstall) {
+            Text(stringResource(R.string.update_download_install))
+        }
+    }
+
     if (failed != null) {
         Text(
             text = updateFailureText(failed),
@@ -666,6 +684,7 @@ private fun UpdateSection(state: UpdateUiState, viewModel: UpdateViewModel) {
                 onClick = viewModel::check,
                 enabled = state.state !is UpdateState.Checking &&
                     state.state !is UpdateState.Downloading &&
+                    state.state !is UpdateState.Verifying &&
                     state.state !is UpdateState.Installing
             ) { Text(stringResource(R.string.update_check_button)) }
             if (failed != null && failed.reason == UpdateFailure.NEEDS_PERMISSION) {

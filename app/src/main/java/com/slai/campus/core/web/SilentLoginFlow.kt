@@ -8,13 +8,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URI
 
-enum class AutomaticLoginState { IDLE, RUNNING, SUCCEEDED, FAILED }
+enum class AutomaticLoginState { IDLE, RUNNING, SUCCEEDED, FAILED, COOLDOWN, NETWORK_UNAVAILABLE }
 
 /** The visible page and the off-screen page share cookies, but never run at the same time. */
 internal interface SilentLoginPage {
     val url: String?
     val failed: Boolean
-    val loaded: Boolean
     val generation: Int
     suspend fun inspect(): String
     suspend fun submit(password: Boolean): String
@@ -28,7 +27,7 @@ internal object SilentLoginUrls {
     }.getOrDefault(false)
 }
 
-/** Live protected requests decide success; page load events only drive form interaction. */
+/** Live protected requests decide success; the script checks when the login DOM is ready. */
 internal suspend fun runSilentLogin(
     page: SilentLoginPage,
     beginPasswordAttempt: suspend () -> Boolean,
@@ -93,13 +92,20 @@ private suspend fun interactWithLoginPage(
                             credentialsAuthorized = true
                         }
                         val password = step == "password"
-                        if (password && passwordGeneration != null && passwordGeneration != page.generation) return
+                        if (password && passwordGeneration != null && passwordGeneration != page.generation) {
+                            onManualRequired()
+                            return
+                        }
                         if (attempt.claim(password)) {
                             if (password) {
                                 if (!beginPasswordAttempt()) return
                                 passwordGeneration = page.generation
                             }
-                            if (page.submit(password) != "submitted") return
+                            val submitted = page.submit(password)
+                            if (submitted != "submitted") {
+                                if (submitted == "manual") onManualRequired()
+                                return
+                            }
                         }
                     }
                 }

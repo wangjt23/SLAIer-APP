@@ -15,6 +15,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.slai.campus.BuildConfig
 import com.slai.campus.core.common.AppLog
+import com.slai.campus.core.session.WebCookieBridge
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -66,7 +67,8 @@ data class WebCapture(
  */
 @Singleton
 class WebViewExtractor @Inject constructor(
-    private val context: Context
+    private val context: Context,
+    private val cookieBridge: WebCookieBridge
 ) {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -76,11 +78,17 @@ class WebViewExtractor @Inject constructor(
         url: String,
         userAgent: String? = null,
         waitAfterPageFinishedMs: Long = 3_000,
-        timeoutMs: Long = 30_000
+        timeoutMs: Long = 30_000,
+        canContinue: () -> Boolean = { true },
+        cookieHost: String? = null
     ): WebCapture = withContext(Dispatchers.Main.immediate) {
         require(AllowedHosts.isAllowed(url)) { "refusing to load a non-school URL: ${AllowedHosts.hostOf(url)}" }
+        if (!canContinue()) throw kotlinx.coroutines.CancellationException("school session changed")
 
         val finished = CompletableDeferred<Unit>()
+        val owner = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val revoked = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun active() = !revoked.get() && owner?.isActive != false && canContinue()
         var finalUrl: String? = null
         var pageTitle: String? = null
         var pageError: String? = null
@@ -101,6 +109,7 @@ class WebViewExtractor @Inject constructor(
             webChromeClient = null
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                    if (!active()) { view.stopLoading(); return }
                     super.onPageStarted(view, url, favicon)
                     // Install the hook as early as possible, then again after load in case the page
                     // navigated client-side and lost it.
@@ -108,6 +117,7 @@ class WebViewExtractor @Inject constructor(
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
+                    if (!active()) return
                     super.onPageFinished(view, url)
                     finalUrl = url
                     view.evaluateJavascript(CaptureScript.INSTALL, null)
@@ -145,13 +155,14 @@ class WebViewExtractor @Inject constructor(
                 ): Boolean {
                     val target = request?.url?.toString() ?: return false
                     // Stay inside the school; anything else is not loaded here.
-                    return !AllowedHosts.isAllowed(target)
+                    return !active() || !AllowedHosts.isAllowed(target)
                 }
 
                 override fun shouldInterceptRequest(
                     view: WebView?,
                     request: WebResourceRequest?
-                ): WebResourceResponse? = null
+                ): WebResourceResponse? = if (active()) null else
+                    WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(byteArrayOf()))
 
                 override fun onRenderProcessGone(
                     view: WebView?,
@@ -162,10 +173,28 @@ class WebViewExtractor @Inject constructor(
                     return true
                 }
             }
-            loadUrl(url)
         }
 
+        var destroyed = false
+        fun destroy() {
+            if (destroyed) return
+            destroyed = true
+            runCatching { webView.stopLoading() }
+            runCatching { webView.webViewClient = WebViewClient() }
+            runCatching { webView.destroy() }
+        }
+        val cookieNavigation = cookieBridge.beginBrowserNavigation(
+            cookieHost ?: AllowedHosts.hostOf(url),
+            onInvalidated = {
+                revoked.set(true)
+                // Destruction is synchronous on the main thread and precedes Cookie removal.
+                destroy()
+                finished.cancel(kotlinx.coroutines.CancellationException("school session cleared"))
+                owner?.cancel(kotlinx.coroutines.CancellationException("school session cleared"))
+            }
+        )
         try {
+            webView.loadUrl(url)
             runCatching { withTimeout(timeoutMs) { finished.await() } }
                 .onFailure { if (it !is TimeoutCancellationException) throw it }
             if (!finished.isCompleted) pageError = pageError ?: "页面加载超时"
@@ -188,12 +217,8 @@ class WebViewExtractor @Inject constructor(
                 error = pageError
             )
         } finally {
-            runCatching {
-                webView.stopLoading()
-                webView.webViewClient = WebViewClient()
-                webView.loadUrl("about:blank")
-                webView.destroy()
-            }
+            destroy()
+            cookieNavigation.close()
         }
     }
 

@@ -6,6 +6,7 @@ import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.core.common.IoDispatcher
 import com.slai.campus.core.common.TimeProvider
 import com.slai.campus.core.network.HttpTrace
+import com.slai.campus.core.network.CookieWritePermit
 import com.slai.campus.core.network.HttpSupport.asMap
 import com.slai.campus.core.network.HttpSupport.contentTypeBase
 import com.slai.campus.core.network.NetworkMonitor
@@ -17,6 +18,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.slai.campus.domain.schedule.ScheduleSource
 import com.slai.campus.domain.schedule.Semester
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
@@ -44,7 +47,6 @@ class SisRemoteDataSource @Inject constructor(
     @SisApiClient private val apiClient: OkHttpClient,
     @SisWebClient private val webClient: OkHttpClient,
     private val sessionStore: SessionStore,
-    private val cookieBridge: com.slai.campus.core.session.WebCookieBridge,
     private val timeProvider: TimeProvider,
     private val networkMonitor: NetworkMonitor,
     @IoDispatcher private val io: CoroutineDispatcher
@@ -75,32 +77,7 @@ class SisRemoteDataSource @Inject constructor(
             val request = Request.Builder().url(url).get()
                 .header("Accept", "text/html,application/xhtml+xml")
                 .build()
-            val outcome = runCatching { apiClient.newCall(request).execute() }
-                .getOrElse {
-                    AppLog.w("SIS probe transport failure: ${it.javaClass.simpleName}")
-                    return@withContext SessionState.ERROR
-                }
-            outcome.use { response ->
-                val location = response.header("Location")
-                when {
-                    response.code in 300..399 && SisScheduleParser.isLoginUrl(location) ->
-                        return@withContext SessionState.EXPIRED
-                    response.code in 300..399 && location != null ->
-                        continue // some other redirect; try the next probe endpoint
-                    response.code == 200 -> {
-                        val body = runCatching { response.peekBody(8 * 1024).string() }.getOrDefault("")
-                        return@withContext if (SisScheduleParser.looksLikeLoginPage(body)) {
-                            SessionState.EXPIRED
-                        } else {
-                            SessionState.AUTHENTICATED
-                        }
-                    }
-                    response.code == 401 || response.code == 403 -> return@withContext SessionState.EXPIRED
-                    // 901 == 未登录（见 fetchTimetable 里的实测记录）。
-                    response.code == 901 -> return@withContext SessionState.EXPIRED
-                    else -> continue
-                }
-            }
+            probeSisCall(apiClient.newCall(request))?.let { return@withContext it }
         }
         SessionState.ERROR
     }
@@ -116,19 +93,25 @@ class SisRemoteDataSource @Inject constructor(
      */
     suspend fun discoverSemester(
         baseUrl: String,
-        deadlineAtMillis: Long = Long.MAX_VALUE
+        deadlineAtMillis: Long = Long.MAX_VALUE,
+        canContinue: () -> Boolean = { true }
     ): SemesterDiscovery = withContext(io) {
+        val owner = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val allowed = { owner?.isActive != false && canContinue() }
         for (template in SisConfig.timetablePageCandidates) {
+            if (!allowed()) throw kotlinx.coroutines.CancellationException("school session changed")
             if (System.currentTimeMillis() > deadlineAtMillis) {
                 AppLog.i("semester discovery deadline reached")
                 break
             }
             val url = SisConfig.apiUrl(baseUrl, template)
             val request = Request.Builder().url(url).get()
+                .tag(CookieWritePermit::class.java, CookieWritePermit(allowed))
                 .header("Accept", "text/html,application/xhtml+xml")
                 .build()
             val response = runCatching { webClient.newCall(request).execute() }.getOrNull() ?: continue
             response.use { res ->
+                if (!allowed()) throw kotlinx.coroutines.CancellationException("school session changed")
                 // 901 == 未登录。webClient 会跟随重定向，所以未登录时更常见的是最终落到登录页；
                 // 两种都要认出来。
                 if (res.code == 901) return@withContext SemesterDiscovery(needsLogin = true)
@@ -321,8 +304,9 @@ class SisRemoteDataSource @Inject constructor(
         baseUrl: String,
         discovered: SemesterDiscovery
     ): Semester = withContext(io) {
-        val (storedAnchor, confirmed) = sessionStore.semesterAnchor()
-        val (storedYear, storedTerm) = sessionStore.semesterCodes()
+        val stored = sessionStore.semesterConfiguration()
+        val storedYear = stored.year
+        val storedTerm = stored.term
 
         val fromServer = runCatching { fetchCurrentSemester(baseUrl) }.getOrNull()
 
@@ -335,26 +319,30 @@ class SisRemoteDataSource @Inject constructor(
             ?: discovered.semester.termCode
             ?: storedTerm
             ?: fallback.second
+        val (storedAnchor, confirmed) = stored.anchorFor(year, term)
 
         // 服务端直接告诉我们"现在是第几周"，这是最可靠的锚点来源。
         val fromWeek = fromServer?.week?.let {
             SemesterCalendarResolver.fromObservedWeek(it, timeProvider.today())
         }
 
-        val anchor: LocalDate? = when {
-            confirmed && storedAnchor != null -> storedAnchor
-            fromWeek != null -> fromWeek
-            discovered.semester.firstWeekMonday != null -> discovered.semester.firstWeekMonday
-            storedAnchor != null -> storedAnchor
-            else -> SemesterCalendarResolver.estimate(year, term)
-        }
+        val anchor = resolveSemesterAnchor(
+            storedAnchor = storedAnchor,
+            confirmed = confirmed,
+            observedAnchor = fromWeek,
+            pageAnchor = discovered.semester.firstWeekMonday.takeIf {
+                (discovered.semester.academicYear == null || discovered.semester.academicYear == year) &&
+                    (discovered.semester.termCode == null || discovered.semester.termCode == term)
+            },
+            academicYear = year,
+            termCode = term
+        ).monday
 
-        if (anchor != null && (confirmed || fromWeek != null || discovered.semester.firstWeekMonday != null)) {
-            sessionStore.setSemesterAnchor(anchor, confirmed = confirmed)
-        }
-        if (!year.isNullOrBlank() || !term.isNullOrBlank()) {
-            sessionStore.setSemesterCodes(year, term)
-        }
+        sessionStore.setSemesterConfiguration(
+            year, term, anchor, confirmed = confirmed && anchor == storedAnchor,
+            verifiedAt = System.currentTimeMillis().takeIf { fromServer != null ||
+                (discovered.semester.academicYear != null && discovered.semester.termCode != null) }
+        )
 
         Semester(
             academicYear = year,
@@ -373,9 +361,13 @@ class SisRemoteDataSource @Inject constructor(
     suspend fun fetchPeriodTimes(
         baseUrl: String,
         xnm: String,
-        xqm: String
+        xqm: String,
+        deadlineMillis: Long = Long.MAX_VALUE,
+        canContinue: () -> Boolean = { true }
     ): List<Pair<java.time.LocalTime, java.time.LocalTime>> = withContext(io) {
         for (template in SisConfig.periodTimeCandidates) {
+            currentCoroutineContext().ensureActive()
+            if (!canContinue() || System.currentTimeMillis() >= deadlineMillis) return@withContext emptyList()
             val url = SisConfig.apiUrl(baseUrl, template)
             val body = FormBody.Builder().apply {
                 add("localeKey", "zh_CN")
@@ -387,8 +379,23 @@ class SisRemoteDataSource @Inject constructor(
                 .header("Accept", "application/json, text/javascript, */*; q=0.01")
                 .header("X-Requested-With", "XMLHttpRequest")
                 .build()
-            val response = runCatching { apiClient.newCall(request).execute() }.getOrNull() ?: continue
+            val call = apiClient.newCall(request)
+            if (deadlineMillis != Long.MAX_VALUE) {
+                val remainingMillis = (deadlineMillis - System.currentTimeMillis()).coerceAtLeast(1)
+                val currentMillis = call.timeout().timeoutNanos() / 1_000_000
+                call.timeout().timeout(
+                    if (currentMillis > 0) minOf(currentMillis, remainingMillis) else remainingMillis,
+                    java.util.concurrent.TimeUnit.MILLISECONDS
+                )
+            }
+            val response = try { call.execute() } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                continue
+            }
             response.use { res ->
+                currentCoroutineContext().ensureActive()
+                if (!canContinue()) return@withContext emptyList()
                 if (!res.isSuccessful) return@use
                 val text = runCatching { res.peekBody(1024L * 1024).string() }.getOrNull() ?: return@use
                 val root = runCatching { json.parseToJsonElement(text) }.getOrNull() as? JsonArray
@@ -472,15 +479,14 @@ class SisRemoteDataSource @Inject constructor(
      * 所以"教务系统登录过期"绝大多数时候只是**应用会话过期**，SSO 那边其实还记得你。此时把
      * `htxylogin` 重新走一遍，就能在用户完全不输入任何东西的情况下拿回一个新的 `JSESSIONID`。
      *
-     * 为什么不用 `webClient` 直接跟随重定向：那会在**同一次 call** 里跨到 `sts.slai.edu.cn`，
-     * 而应用层拦截器只在 call 开始时按 URL 取一次 Cookie，跨域那一段就会带上错误的 Cookie。
-     * 这里改成手动逐跳处理，每一跳都按**当前 URL** 取 Cookie，并把 `Set-Cookie` 写回 WebView 的
-     * Cookie 仓库 —— 全程只搬运 Cookie，不接触、不保存任何凭据。
+     * 手动逐跳处理使续期能限制次数、识别登录页，并在账号改变或退出后停止。
+     * 网络拦截器在每一跳取当前 URL 的 Cookie；请求的所有权在写回前再次验证。
+     * 全程只搬运 Cookie，不接触、不保存任何凭据。
      *
      * @return true 表示最后落在了业务页面（很可能已经拿到新会话）；false 表示 SSO 也要重新登录。
      */
-    suspend fun renewSession(baseUrl: String): Boolean = withContext(io) {
-        if (!networkMonitor.hasNetwork) return@withContext false
+    suspend fun renewSession(baseUrl: String, canContinue: () -> Boolean = { true }): Boolean = withContext(io) {
+        if (!networkMonitor.hasNetwork || !canContinue()) return@withContext false
 
         // 入口要从**当前** baseUrl 推，不能用构建期常量：用户在设置里改了地址，续期也得跟着走。
         var url = SisConfig.entryUrlFor(baseUrl)
@@ -490,6 +496,7 @@ class SisRemoteDataSource @Inject constructor(
         val deadline = System.currentTimeMillis() + RENEW_BUDGET_MS
 
         repeat(MAX_SSO_HOPS) {
+            if (!canContinue()) return@withContext false
             if (System.currentTimeMillis() > deadline) {
                 AppLog.i("silent renewal: deadline reached")
                 return@withContext false
@@ -499,20 +506,17 @@ class SisRemoteDataSource @Inject constructor(
                 return@withContext false
             }
 
-            val cookie = cookieBridge.cookieHeaderBlocking(url)
             val request = Request.Builder().url(url).get()
+                .tag(CookieWritePermit::class.java, CookieWritePermit(canContinue))
                 .header("Accept", "text/html,application/xhtml+xml")
-                .apply { if (!cookie.isNullOrBlank()) header("Cookie", cookie) }
                 .build()
 
             val response = runCatching { apiClient.newCall(request).execute() }.getOrNull()
                 ?: return@withContext false
 
             response.use { res ->
-                // Cookies handed out mid-flight (a fresh JSESSIONID, or an AD FS refresh) belong in
-                // the WebView store, otherwise the next hop cannot see them.
-                cookieBridge.saveSetCookieBlocking(url, res.headers("Set-Cookie"))
-
+                if (!canContinue()) return@withContext false
+                // The per-hop network interceptor safely commits cookies before the next request.
                 val location = res.header("Location")
                 if (location.isNullOrBlank()) {
                     val body = runCatching { res.peekBody(64 * 1024).string() }.getOrDefault("")
@@ -521,7 +525,7 @@ class SisRemoteDataSource @Inject constructor(
                     // wrong "success" here would make the logs lie.)
                     val baseHost = runCatching { baseUrl.toHttpUrlOrNull()?.host }.getOrNull()
                     val host = runCatching { url.toHttpUrlOrNull()?.host }.getOrNull()
-                    val landed = res.isSuccessful &&
+                    val landed = canContinue() && res.isSuccessful &&
                         host != null && host == baseHost &&
                         !SisScheduleParser.looksLikeLoginPage(body)
                     AppLog.i("silent renewal: ended at ${SisScheduleParser.preview(url)} ok=$landed")

@@ -179,7 +179,11 @@
     <string name="cd_next_week">下一周</string>
     <string name="attendance_remaining">还差 %1$s</string>
     <string name="attendance_goal_reached">已达标</string>
-    <string name="attendance_no_record_today">还没有今天的记录</string>
+    <string name="attendance_no_record_today">还没有该考勤日的记录</string>
+    <string name="attendance_day_heading">考勤日 · %1$s</string>
+    <string name="attendance_current_day">当前考勤日</string>
+    <string name="attendance_overnight_title">上一考勤日</string>
+    <string name="attendance_overnight_hint">凌晨延续上一考勤日，05:00 切换</string>
     <string name="attendance_month_total">本月有记录 %1$d 天（合计 %2$s）</string>
     <string name="attendance_inside">在馆中</string>
     <string name="attendance_inside_school">在馆 %1$s（学校记录）</string>
@@ -216,7 +220,7 @@
     <string name="attendance_days_count">%1$d 天</string>
     <string name="attendance_times_count">%1$d 次</string>
     <string name="attendance_school_record">学校记录 %1$s</string>
-    <string name="attendance_no_day_data">本月还没有这一天的数据。可能今天还没刷卡，或本月未同步。</string>
+    <string name="attendance_no_day_data">还没有该考勤日的数据。可能尚无刷卡记录，或对应月份未同步。</string>
     <string name="attendance_sessions">共 %1$d 段，累计 %2$s</string>
     <string name="attendance_first_in">首次进闸</string>
     <string name="attendance_last_out">最后出闸</string>
@@ -232,7 +236,7 @@
     <string name="cd_next_month">下个月</string>
     <string name="home_today_card">今天 · %1$s</string>
     <string name="hero_logo_cd">深圳河套学院 Shenzhen Loop Area Institute</string>
-    <string name="home_no_swipe_hint">今天还没有刷卡记录，点「刷新」从学生系统读取</string>
+    <string name="home_no_swipe_hint">该考勤日还没有刷卡记录，点「刷新」从学生系统读取</string>
     <string name="home_no_duration">暂无累计时长</string>
     <string name="settings_anchor_confirmed">已确认：%1$s</string>
     <string name="settings_anchor_estimated">推算：%1$s</string>
@@ -267,6 +271,7 @@
     <string name="saved_login_enable">自动登录</string>
     <string name="saved_login_stored">已保存到本机</string>
     <string name="saved_login_paused">自动登录已暂停，请自行登录；登录成功后恢复自动登录。</string>
+    <string name="saved_login_cooldown">自动登录冷却中，剩余 %1$s</string>
     <string name="saved_login_change">修改账号密码</string>
     <string name="saved_login_save">保存并开启</string>
     <string name="saved_login_clear">清除账号密码</string>
@@ -277,4 +282,6 @@
     <string name="automatic_login_running">正在自动登录…</string>
     <string name="automatic_login_succeeded">登录成功</string>
     <string name="automatic_login_failed">自动登录失败，请自行登录</string>
+    <string name="automatic_login_cooldown">自动登录暂缓，稍后重试</string>
+    <string name="automatic_login_network_unavailable">暂时无法验证登录，网络恢复后会重试</string>
 </resources>

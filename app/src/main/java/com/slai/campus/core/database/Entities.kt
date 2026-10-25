@@ -62,14 +62,14 @@ data class SyncMetaEntity(
 )
 
 /**
- * One cached attendance day.
+ * One attendance day in the school's monthly snapshot.
  *
  * Replaces the old, vague `checkin_status`: the school's ledger has a real record per day, so the app
  * stores exactly that and can answer "when did I swipe in and out on 9 月 9 日" offline.
  */
 @Entity(
     tableName = "attendance_record",
-    primaryKeys = ["accountHash", "date"],
+    primaryKeys = ["accountHash", "month", "date"],
     indices = [Index(value = ["accountHash", "month"])]
 )
 data class AttendanceRecordEntity(

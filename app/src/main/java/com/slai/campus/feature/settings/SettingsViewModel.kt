@@ -60,10 +60,14 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
     val savedLogin = savedLoginStore.status
+    val savedLoginRetrySeconds = com.slai.campus.core.session.savedLoginRetrySeconds(
+        savedLogin, timeProvider::epochMillis
+    ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     private val _savedLoginError = kotlinx.coroutines.flow.MutableStateFlow(false)
     val savedLoginError = _savedLoginError.asStateFlow()
 
     fun saveLogin(username: String, password: String, onSaved: () -> Unit) {
+        cookieBridge.cancelBrowserNavigations(SchoolSystem.STU.host)
         viewModelScope.launch {
             _savedLoginError.value = false
             try {
@@ -74,12 +78,14 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setSavedLoginEnabled(enabled: Boolean) {
+        cookieBridge.cancelBrowserNavigations(SchoolSystem.STU.host)
         viewModelScope.launch {
             _savedLoginError.value = runCatching { savedLoginStore.setEnabled(enabled) }.isFailure
         }
     }
 
     fun clearSavedLogin() {
+        cookieBridge.cancelBrowserNavigations(SchoolSystem.STU.host)
         viewModelScope.launch {
             _savedLoginError.value = runCatching { savedLoginStore.clear() }.isFailure
         }
@@ -174,7 +180,7 @@ class SettingsViewModel @Inject constructor(
     fun clearSession(system: SchoolSystem) {
         viewModelScope.launch {
             // Explicit sign-out must not immediately sign the user back in.
-            savedLoginStore.setEnabled(false)
+            savedLoginStore.setEnabled(false, system)
             sessionManager.signOut(system, cookieBridge)
             if (system == SchoolSystem.SIS) {
                 ScheduleSyncWorker.cancelAll(appContext)
@@ -212,9 +218,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val trimmed = value?.trim()?.takeIf { it.isNotEmpty() }
             sessionStore.setStudentIdHint(trimmed)
-            if (trimmed != null) {
-                sessionManager.setAccountHash(com.slai.campus.core.session.AccountHasher.hash(trimmed))
-            }
         }
     }
 

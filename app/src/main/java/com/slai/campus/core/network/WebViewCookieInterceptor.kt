@@ -1,11 +1,10 @@
 package com.slai.campus.core.network
 
-import android.os.Handler
-import android.os.Looper
-import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.session.WebCookieBridge
+import com.slai.campus.core.session.CookieRequestSnapshot
 import okhttp3.Interceptor
 import okhttp3.Response
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -24,64 +23,70 @@ class WebViewCookieInterceptor @Inject constructor(
     private val bridge: WebCookieBridge
 ) : Interceptor {
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    /** Runs once outside OkHttp's retry/redirect loop; every wire attempt retains this permit. */
+    val requestGuard: Interceptor = Interceptor { chain ->
+        guardWebViewCookieRequest(chain, bridge::requestSnapshotBlocking)
+    }
 
     override fun intercept(chain: Interceptor.Chain): Response {
         return bridgeWebViewCookies(chain,
-            readCookie = { url -> onMainThread { bridge.cookieHeader(url) } },
-            saveCookies = { url, cookies -> onMainThread { bridge.saveSetCookie(url, cookies) }; Unit })
-    }
-
-    private fun <T> onMainThread(block: () -> T): T? {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            return runCatching(block).onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }.getOrNull()
-        }
-        var result: T? = null
-        val latch = java.util.concurrent.CountDownLatch(1)
-        mainHandler.post {
-            result = runCatching(block)
-                .onFailure { AppLog.w("cookie bridge failed: ${it.javaClass.simpleName}") }
-                .getOrNull()
-            latch.countDown()
-        }
-        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
-            AppLog.w("cookie bridge timed out")
-        }
-        return result
+            readCookie = bridge::requestSnapshotBlocking,
+            saveCookies = bridge::saveIfUnchangedBlocking)
     }
 }
 
 /** Session probes borrow cookies but must never replace a concurrent browser login's session. */
 internal object ReadOnlySessionCheck
 
+/** Request-scoped SSO ownership, rechecked at the actual main-thread Cookie commit. */
+class CookieWritePermit(val canWrite: () -> Boolean)
+
+internal fun guardWebViewCookieRequest(
+    chain: Interceptor.Chain,
+    readCookie: (String) -> CookieRequestSnapshot?
+): Response {
+    val original = chain.request()
+    val snapshot = readCookie(original.url.toString())
+    val previous = original.tag(CookieWritePermit::class.java)
+    val permit = CookieWritePermit { snapshot?.writePermitted() == true && previous?.canWrite() != false }
+    return chain.proceed(original.newBuilder().tag(CookieWritePermit::class.java, permit).build())
+}
+
 internal fun bridgeWebViewCookies(
     chain: Interceptor.Chain,
-    readCookie: (String) -> String?,
-    saveCookies: (String, List<String>) -> Unit
+    readCookie: (String) -> CookieRequestSnapshot?,
+    saveCookies: (String, CookieRequestSnapshot?, List<String>) -> Unit
 ): Response {
-        val original = chain.request()
-        val url = original.url.toString()
+    val original = chain.request()
+    val url = original.url.toString()
 
-        val cookie = readCookie(url)
-        val request = if (cookie.isNullOrBlank()) {
-            original
-        } else {
-            original.newBuilder()
-                .header("Cookie", cookie)
-                // Some school gateways serve different content to unknown agents; keep it stable.
-                .apply {
-                    if (original.header("Referer") == null) {
-                        header("Referer", original.url.newBuilder().encodedPath("/").build().toString())
-                    }
-                }
-                .build()
+    val permit = original.tag(CookieWritePermit::class.java)
+    val snapshot = readCookie(url)?.let { if (permit == null) it else it.withWritePermit(permit.canWrite) }
+    val cookie = snapshot?.header
+    val referer = original.header("Referer")?.toHttpUrlOrNull()?.takeIf {
+        it.scheme == original.url.scheme && it.host == original.url.host && it.port == original.url.port
+    }?.newBuilder()?.query(null)?.fragment(null)?.username("")?.password("")?.build()
+    val request = original.newBuilder().apply {
+        // Redirects inherit Response.request's tags. Preserve the first hop's browser/clear
+        // generation throughout the call, while each hop still uses fresh host/path cookies.
+        // A normal Set-Cookie write does not change this global generation.
+        if (snapshot != null) tag(CookieWritePermit::class.java, CookieWritePermit(snapshot::writePermitted))
+        // Redirects/retries must not carry a previous hop's Cookie header to a cookie-less host.
+        if (cookie.isNullOrBlank()) removeHeader("Cookie") else header("Cookie", cookie)
+        when {
+            referer != null -> header("Referer", referer.toString())
+            !cookie.isNullOrBlank() -> header("Referer", original.url.newBuilder().encodedPath("/")
+                .query(null).fragment(null).username("").password("").build().toString())
+            else -> removeHeader("Referer")
         }
+    }.build()
 
-        val response = chain.proceed(request)
+    val response = chain.proceed(request)
 
-        val setCookies = response.headers("Set-Cookie")
-        if (setCookies.isNotEmpty() && original.tag(ReadOnlySessionCheck::class.java) == null) {
-            saveCookies(url, setCookies)
-        }
-        return response
+    val setCookies = response.headers("Set-Cookie")
+    if (setCookies.isNotEmpty() && original.tag(ReadOnlySessionCheck::class.java) == null &&
+        (permit == null || permit.canWrite())) {
+        saveCookies(url, snapshot, setCookies)
+    }
+    return response
 }

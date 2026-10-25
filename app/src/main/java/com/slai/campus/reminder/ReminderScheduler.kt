@@ -65,7 +65,7 @@ class ReminderScheduler @Inject constructor(
             return@withContext 0
         }
 
-        val accountHash = sessionManager.current().accountHash
+        val accountHash = sessionManager.current().accountHashOf(com.slai.campus.core.common.SchoolSystem.SIS)
         if (accountHash.isNullOrBlank()) {
             cancelAll()
             return@withContext 0

@@ -51,10 +51,6 @@ data class ApiProvider(
 
     val isLearned: Boolean get() = learnedAt > 0
 
-    val schoolSystem: SchoolSystem? get() = SchoolSystem.fromKey(system)
-
-    val providerPurpose: ProviderPurpose? get() = ProviderPurpose.fromKey(purpose)
-
     /** Effective field map: explicit entries win, ZFSoft defaults fill the gaps. */
     fun resolvedFieldMap(): Map<String, String> = Fields.ZFSOFT_DEFAULTS + fieldMap
 
@@ -137,19 +133,19 @@ object Fields {
      * from a captured payload.
      */
     val ALIASES: Map<String, List<String>> = mapOf(
-        COURSE_NAME to listOf("kcmc", "courseName", "course_name", "coursename", "kcmc", "course", "title", "name"),
+        COURSE_NAME to listOf("kcmc", "courseName", "course_name", "course", "title", "name"),
         TEACHER to listOf("xm", "teacher", "teacherName", "jsxm", "teacher_name", "js"),
-        LOCATION to listOf("cdmc", "location", "classroom", "room", "jsjs", "place", "cdmc"),
-        CAMPUS to listOf("xqmc", "campus", "xqmc", "area"),
+        LOCATION to listOf("cdmc", "location", "classroom", "room", "jsjs", "place"),
+        CAMPUS to listOf("xqmc", "campus", "area"),
         WEEKDAY to listOf("xqj", "weekday", "dayOfWeek", "xingqi", "week", "xq"),
         PERIODS to listOf("jcs", "jc", "periods", "period", "jieci", "jcor"),
         WEEKS to listOf("zcd", "weeks", "zhouci", "weekRange", "zc", "weekstr"),
         PARITY to listOf("sxbj", "parity", "oddEven"),
         COURSE_CODE to listOf("kch", "kch_id", "courseCode", "courseId", "kcdm", "code"),
-        TEACHING_CLASS to listOf("jxbmc", "className", "teachingClass", "jxbmc", "classname"),
+        TEACHING_CLASS to listOf("jxbmc", "className", "teachingClass"),
         STUDENT_ID to listOf("xh", "studentId", "studentNo", "xh_id", "sno"),
-        START_TIME to listOf("startTime", "kssj", "start", "kssj", "starttime"),
-        END_TIME to listOf("endTime", "jssj", "end", "jssj", "endtime")
+        START_TIME to listOf("startTime", "kssj", "start"),
+        END_TIME to listOf("endTime", "jssj", "end")
     )
 }
 
@@ -162,11 +158,3 @@ enum class ProviderPurpose(val key: String, val label: String) {
         fun fromKey(key: String?): ProviderPurpose? = entries.firstOrNull { it.key == key }
     }
 }
-
-/** Everything the provider UI needs to render a row. */
-data class ProviderStatus(
-    val provider: ApiProvider,
-    val lastResult: String? = null,
-    val lastOk: Boolean? = null,
-    val rowCount: Int? = null
-)

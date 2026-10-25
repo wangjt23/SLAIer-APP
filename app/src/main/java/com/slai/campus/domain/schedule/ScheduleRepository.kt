@@ -17,9 +17,6 @@ interface ScheduleRepository {
     /** Today's classes, ordered by start time. Reads Room only. */
     fun observeToday(): Flow<List<ClassOccurrence>>
 
-    /** The whole current teaching week, ordered by date then start time. Reads Room only. */
-    fun observeWeek(): Flow<List<ClassOccurrence>>
-
     /** Classes for an explicit date range (used by the week pager). Reads Room only. */
     fun observeRange(from: LocalDate, to: LocalDate): Flow<List<ClassOccurrence>>
 
@@ -51,11 +48,9 @@ interface ScheduleRepository {
     /** Attempts a full remote fetch. Safe to call from a Worker. */
     suspend fun refresh(reason: RefreshReason = RefreshReason.MANUAL): RefreshResult
 
-    /** Loads cached rows once (for notification scheduling from a Worker). */
-    suspend fun snapshotUpcoming(from: LocalDate, days: Int): List<ClassOccurrence>
 }
 
-enum class RefreshReason { MANUAL, APP_START, BACKGROUND, AFTER_LOGIN }
+enum class RefreshReason { MANUAL, BACKGROUND, AFTER_LOGIN }
 
 /** Coarse progress of a refresh, shown next to the spinner. */
 enum class RefreshPhase(val label: String) {
@@ -64,8 +59,7 @@ enum class RefreshPhase(val label: String) {
     DISCOVERING("正在读取学年学期…"),
     NATIVE("正在请求教务接口…"),
     WEBVIEW("正在从网页提取…"),
-    SAVING("正在写入本地缓存…"),
-    DONE("")
+    SAVING("正在写入本地缓存…")
 }
 
 /** Everything the home screen needs to explain the freshness of the data it is showing. */

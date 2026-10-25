@@ -11,9 +11,11 @@ import java.time.temporal.TemporalAdjusters
  * The source system (ZFSoft) expresses a course as "weekday 3, periods 5-6, weeks 1-16 (odd)", which
  * is not a date. [firstWeekMonday] is what makes the conversion possible. It comes from, in order of
  * preference:
- *  1. a date the timetable page itself rendered,
- *  2. a value the user confirmed in Settings,
- *  3. an explicit heuristic (see `SemesterCalendarResolver`) clearly labelled as an estimate.
+ *  1. a stored date marked as confirmed,
+ *  2. the current teaching week reported by the server,
+ *  3. a date derived from the timetable page,
+ *  4. an unconfirmed stored date,
+ *  5. an explicit heuristic (see `SemesterCalendarResolver`) labelled as an estimate.
  */
 data class Semester(
     /** Source-system academic year code, e.g. ZFSoft `xnm=2026`. */

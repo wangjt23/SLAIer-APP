@@ -40,10 +40,10 @@ class StuRemoteDataSource @Inject constructor(
     private val renewalMutex = Mutex()
 
     /** Walk the existing SSO session once; never clear cookies or submit credentials. */
-    suspend fun renewSession(baseUrl: String): Boolean = withContext(io) {
+    suspend fun renewSession(baseUrl: String, canContinue: () -> Boolean = { true }): Boolean = withContext(io) {
         renewalMutex.withLock {
-            if (!networkMonitor.hasNetwork) return@withLock false
-            renewStuSession(apiClient, baseUrl)
+            if (!networkMonitor.hasNetwork || !canContinue()) return@withLock false
+            renewStuSession(apiClient, baseUrl, canContinue)
         }
     }
 

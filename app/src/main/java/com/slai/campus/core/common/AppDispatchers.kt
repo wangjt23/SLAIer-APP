@@ -8,14 +8,6 @@ import javax.inject.Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class IoDispatcher
 
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class DefaultDispatcher
-
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class MainDispatcher
-
 /**
  * 进程级 CoroutineScope。
  *
@@ -33,6 +25,5 @@ annotation class ApplicationScope
  */
 data class AppDispatchers(
     val io: CoroutineDispatcher = Dispatchers.IO,
-    val default: CoroutineDispatcher = Dispatchers.Default,
-    val main: CoroutineDispatcher = Dispatchers.Main.immediate
+    val default: CoroutineDispatcher = Dispatchers.Default
 )

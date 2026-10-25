@@ -2,12 +2,13 @@ package com.slai.campus.data.sis
 
 import com.slai.campus.core.common.Redactor
 import com.slai.campus.core.common.RemoteResult
-import com.slai.campus.data.sis.SisJson.string
 import com.slai.campus.domain.schedule.ClassOccurrence
 import com.slai.campus.domain.schedule.ScheduleSource
 import com.slai.campus.domain.schedule.Semester
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import org.jsoup.Jsoup
 
 /**
  * Parses a ZFSoft timetable response, leniently but with hard validation of the fields we depend on.
@@ -50,15 +51,20 @@ object SisScheduleParser {
             ?: return RemoteResult.SchemaChanged("JSON 根节点不是对象")
 
         // The one field we cannot live without.
-        if (!obj.containsKey("kbList")) {
+        if (obj["kbList"] !is JsonArray) {
             val keys = obj.keys.take(8).joinToString(", ")
-            return RemoteResult.SchemaChanged("缺少 kbList 字段（顶层字段：$keys）")
+            return RemoteResult.SchemaChanged("缺少有效的 kbList 数组（顶层字段：$keys）")
         }
 
         val response = runCatching { json.decodeFromJsonElement(SisTimetableResponse.serializer(), obj) }
             .getOrElse { return RemoteResult.SchemaChanged("DTO 映射失败：${it.javaClass.simpleName}") }
 
         val items = response.kbList.orEmpty()
+
+        // A stale/custom provider can answer for another term; never date those rows using the
+        // current term's anchor or allow that response to clear the current cache.
+        val validation = validateTimetable(obj, items.map { it.studentId }, semester)
+        validation.error?.let { return RemoteResult.SchemaChanged(it) }
 
         // An empty kbList is only trusted when the payload still looks like a real timetable
         // response. Otherwise it is far more likely to be a changed/blocked endpoint.
@@ -67,8 +73,6 @@ object SisScheduleParser {
         ) {
             return RemoteResult.SchemaChanged("kbList 为空且缺少课表元数据")
         }
-
-        val studentId = items.firstNotNullOfOrNull { it.studentId?.trim()?.takeIf { v -> v.isNotEmpty() } }
 
         val normalized = SisScheduleNormalizer.normalize(
             items = items,
@@ -87,23 +91,16 @@ object SisScheduleParser {
             )
         }
 
-        // The response reports the term it answered for; that is the most reliable source and lets
-        // the app correct itself even if the stored codes were stale.
-        val term = response.studentInfo?.let { info ->
-            val year = info.string("XNM")
-            val termCode = info.string("XQM")
-            if (!year.isNullOrBlank() && !termCode.isNullOrBlank()) year to termCode else null
-        }
-
         return RemoteResult.Success(
             SisTimetableParsed(
                 occurrences = normalized.occurrences,
                 response = response,
                 rawItemCount = items.size,
                 skippedRows = normalized.skipped,
-                studentId = studentId,
+                studentId = validation.studentId,
                 warning = normalized.warning,
-                reportedTerm = term
+                reportedTerm = validation.reportedTerm,
+                trustedEmpty = items.isEmpty()
             )
         )
     }
@@ -117,13 +114,11 @@ object SisScheduleParser {
      */
     fun looksLikeLoginPage(body: String?): Boolean {
         val text = body?.lowercase().orEmpty()
-        if (text.isBlank()) return false
-        val hasLoginForm = text.contains("login_slogin") &&
-            text.contains("name=\"yhm\"") &&
-            text.contains("name=\"mm\"")
-        val hasLoginTitle = text.contains("<title>") &&
-            text.contains("教务管理系统") &&
-            text.contains("login_slogin")
+        if (text.isBlank() || !text.contains("login_slogin")) return false
+        val document = Jsoup.parse(text)
+        val fields = document.select("form input[name]").map { it.attr("name").lowercase() }.toSet()
+        val hasLoginForm = "yhm" in fields && "mm" in fields
+        val hasLoginTitle = document.title().contains("教务管理系统")
         return hasLoginForm || hasLoginTitle
     }
 
@@ -144,7 +139,9 @@ data class SisTimetableParsed(
     val studentId: String?,
     val warning: String?,
     /** Academic year / term the server answered for, when it reports them (`xsxx.XNM/XQM`). */
-    val reportedTerm: Pair<String, String>? = null
+    val reportedTerm: Pair<String, String>? = null,
+    /** Explicitly empty standard timetable with school metadata; generic arrays/DOM are untrusted. */
+    val trustedEmpty: Boolean = false
 ) {
     val isTrulyEmpty: Boolean get() = rawItemCount == 0
 }

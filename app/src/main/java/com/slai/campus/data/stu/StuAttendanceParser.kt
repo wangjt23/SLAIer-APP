@@ -1,6 +1,7 @@
 package com.slai.campus.data.stu
 
 import com.slai.campus.core.common.RemoteResult
+import com.slai.campus.core.session.AccountHasher
 import com.slai.campus.domain.attendance.AttendanceMonth
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.AttendanceStats
@@ -29,8 +30,8 @@ import java.time.LocalTime
  * }
  * ```
  *
- * Unknown fields are ignored; a payload that has neither `weeks` nor `data` is a typed failure, so a
- * changed endpoint can never be mistaken for "no attendance".
+ * Unknown fields are ignored. Every advertised week and every dated row must parse before the
+ * month may replace its cache; missing data is never interpreted as an empty month.
  */
 object StuAttendanceParser {
 
@@ -39,6 +40,7 @@ object StuAttendanceParser {
         isLenient = true
         explicitNulls = false
     }
+    private val WEEK_KEY = Regex("week[1-9][0-9]*")
 
     fun parse(body: String?, month: String): RemoteResult<AttendanceMonth> {
         val text = body?.trim().orEmpty()
@@ -56,48 +58,67 @@ object StuAttendanceParser {
 
         val weeksArray = root["weeks"] as? JsonArray
         val dataObject = root["data"] as? JsonObject
-        if (weeksArray == null && dataObject == null) {
+        if ((root.containsKey("weeks") && weeksArray == null) || dataObject == null) {
             return RemoteResult.SchemaChanged("缺少 weeks / data 字段（顶层字段：${root.keys.take(8).joinToString(",")}）")
         }
 
-        // `weeks` gives the label + range; `data.weekN` gives the rows.
-        val weeks = weeksArray.orEmptyArray().mapIndexedNotNull { index, element ->
-            val obj = element as? JsonObject ?: return@mapIndexedNotNull null
-            val label = obj.string("label").orEmpty()
-            val range = obj.string("range").orEmpty()
-            val rows = dataObject?.get("week${index + 1}") as? JsonArray
-            AttendanceWeek(
-                label = label,
-                range = range,
-                records = rows.orEmptyArray().mapNotNull { row -> (row as? JsonObject)?.let(::toRecord) }
-            )
+        // Auxiliary data fields belong to neither the ledger nor its account identity.
+        val weekData = dataObject.entries.filter { it.key.matches(WEEK_KEY) }
+        if (weekData.isEmpty() && (weeksArray?.isEmpty() != true || success != "true")) {
+            return RemoteResult.SchemaChanged("缺少有效的周考勤数组，无法确认月度记录完整")
         }
 
-        // Some deployments may only send `data`; build weeks from whatever keys exist.
-        val finalWeeks = if (weeks.isNotEmpty()) {
-            weeks
-        } else {
-            dataObject.orEmptyObject().entries
-                .filter { it.key.startsWith("week") }
-                .sortedBy { it.key.removePrefix("week").toIntOrNull() ?: 0 }
-                .map { (key, value) ->
-                    val rows = (value as? JsonArray).orEmptyArray()
-                    AttendanceWeek(
-                        label = key,
-                        range = "",
-                        records = rows.mapNotNull { row -> (row as? JsonObject)?.let(::toRecord) }
-                    )
+        if (!weeksArray.isNullOrEmpty()) {
+            val advertisedKeys = (1..weeksArray.size).map { "week$it" }.toSet()
+            if (advertisedKeys != weekData.map { it.key }.toSet()) {
+                return RemoteResult.SchemaChanged("周考勤数据与周列表不一致，已保留原有缓存")
+            }
+        }
+
+        val seenDates = mutableSetOf<LocalDate>()
+        val owners = mutableSetOf<String>()
+        val recordsByWeek = weekData.associate { (key, value) ->
+            val rows = value as? JsonArray
+                ?: return RemoteResult.SchemaChanged("周考勤数据不是数组，已保留原有缓存")
+            key to rows.map { element ->
+                val row = element as? JsonObject
+                    ?: return RemoteResult.SchemaChanged("考勤记录不是对象，已保留原有缓存")
+                val record = toRecord(row)
+                    ?: return RemoteResult.SchemaChanged("考勤记录缺少有效日期，已保留原有缓存")
+                if (!seenDates.add(record.date)) {
+                    return RemoteResult.SchemaChanged("考勤记录包含重复日期，已保留原有缓存")
                 }
+                row.string("userNo")?.takeIf { it.length >= 3 && !it.contains('*') }?.let(owners::add)
+                record
+            }
+        }
+
+        // `weeks` gives the label + range; data-only deployments use their explicit week keys.
+        val finalWeeks = if (!weeksArray.isNullOrEmpty()) {
+            weeksArray.mapIndexed { index, element ->
+                val obj = element as? JsonObject
+                    ?: return RemoteResult.SchemaChanged("周考勤列表包含无效条目，已保留原有缓存")
+                AttendanceWeek(
+                    label = obj.string("label").orEmpty(),
+                    range = obj.string("range").orEmpty(),
+                    records = recordsByWeek.getValue("week${index + 1}")
+                )
+            }
+        } else {
+            recordsByWeek.entries.sortedBy { it.key.removePrefix("week").toIntOrNull() ?: Int.MAX_VALUE }
+                .map { (key, records) -> AttendanceWeek(label = key, range = "", records = records) }
         }
 
         val stats = (root["stats"] as? JsonObject).orEmptyObject().mapValues { (_, v) -> primitiveText(v) }
+        if (owners.size > 1) return RemoteResult.SchemaChanged("响应包含不同账号的考勤记录，已保留缓存")
 
         return RemoteResult.Success(
             AttendanceMonth(
                 month = month,
                 weeks = finalWeeks.filter { it.records.isNotEmpty() || it.label.isNotBlank() },
                 stats = stats,
-                summary = toSummary(stats)
+                summary = toSummary(stats),
+                accountHash = owners.singleOrNull()?.let(AccountHasher::hash)
             )
         )
     }
@@ -172,5 +193,4 @@ object StuAttendanceParser {
 
     private fun JsonObject?.orEmptyObject(): JsonObject = this ?: JsonObject(emptyMap())
 
-    private fun JsonArray?.orEmptyArray(): List<JsonElement> = this ?: emptyList()
 }

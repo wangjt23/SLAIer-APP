@@ -43,8 +43,14 @@ enum class SessionState {
 data class SessionSnapshot(
     val sis: SessionState = SessionState.UNKNOWN,
     val stu: SessionState = SessionState.UNKNOWN,
-    val accountHash: String? = null
+    val sisAccountHash: String? = null,
+    val stuAccountHash: String? = null
 ) {
+    fun accountHashOf(system: SchoolSystem): String? = when (system) {
+        SchoolSystem.SIS -> sisAccountHash
+        SchoolSystem.STU -> stuAccountHash
+    }
+
     fun stateOf(system: SchoolSystem): SessionState = when (system) {
         SchoolSystem.SIS -> sis
         SchoolSystem.STU -> stu

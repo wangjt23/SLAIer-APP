@@ -6,6 +6,7 @@ import com.slai.campus.core.common.AppDispatchers
 import com.slai.campus.core.common.ApplicationScope
 import com.slai.campus.core.common.IoDispatcher
 import com.slai.campus.core.database.AppDatabase
+import com.slai.campus.core.database.MIGRATION_3_4
 import com.slai.campus.core.database.ScheduleDao
 import com.slai.campus.core.database.SyncMetaDao
 import com.slai.campus.core.network.HttpClientFactory
@@ -94,9 +95,10 @@ object AppModule {
     @Singleton
     fun provideDatabase(context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.NAME)
-            // The cache is a pure derivative of the server: if the schema changes, rebuilding it is
-            // always safe, and losing it must never lose anything the user typed.
-            .fallbackToDestructiveMigration(dropAllTables = true)
+            .addMigrations(MIGRATION_3_4)
+            // The pre-v3 cache formats had no migration. Every v3 row now has an explicit,
+            // non-destructive path; a missing migration must never silently clear that cache.
+            .fallbackToDestructiveMigrationFrom(true, 1, 2)
             .build()
 
     @Provides
@@ -136,7 +138,7 @@ object AppModule {
     fun provideSisApiClient(
         builder: OkHttpClient.Builder,
         interceptor: WebViewCookieInterceptor
-    ): OkHttpClient = HttpClientFactory.apiClient(builder, interceptor)
+    ): OkHttpClient = HttpClientFactory.apiClient(builder, interceptor, interceptor.requestGuard)
 
     @Provides
     @Singleton
@@ -144,7 +146,7 @@ object AppModule {
     fun provideSisWebClient(
         builder: OkHttpClient.Builder,
         interceptor: WebViewCookieInterceptor
-    ): OkHttpClient = HttpClientFactory.webClient(builder, interceptor)
+    ): OkHttpClient = HttpClientFactory.webClient(builder, interceptor, interceptor.requestGuard)
 
     @Provides
     @Singleton
@@ -152,7 +154,7 @@ object AppModule {
     fun provideStuApiClient(
         builder: OkHttpClient.Builder,
         interceptor: WebViewCookieInterceptor
-    ): OkHttpClient = HttpClientFactory.apiClient(builder, interceptor)
+    ): OkHttpClient = HttpClientFactory.apiClient(builder, interceptor, interceptor.requestGuard)
 
     @Provides
     @Singleton
@@ -160,7 +162,7 @@ object AppModule {
     fun provideStuWebClient(
         builder: OkHttpClient.Builder,
         interceptor: WebViewCookieInterceptor
-    ): OkHttpClient = HttpClientFactory.webClient(builder, interceptor)
+    ): OkHttpClient = HttpClientFactory.webClient(builder, interceptor, interceptor.requestGuard)
 }
 
 @Module

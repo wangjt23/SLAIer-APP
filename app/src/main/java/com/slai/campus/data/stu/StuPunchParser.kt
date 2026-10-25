@@ -1,6 +1,7 @@
 package com.slai.campus.data.stu
 
 import com.slai.campus.core.common.RemoteResult
+import com.slai.campus.core.common.map
 import com.slai.campus.domain.attendance.AttendancePunch
 import com.slai.campus.domain.attendance.PunchDirection
 import kotlinx.serialization.json.Json
@@ -31,7 +32,9 @@ object StuPunchParser {
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     )
 
-    fun parse(body: String?): RemoteResult<List<AttendancePunch>> {
+    fun parse(body: String?): RemoteResult<List<AttendancePunch>> = parsePage(body).map { it.punches }
+
+    fun parsePage(body: String?): RemoteResult<StuPunchPage> {
         val text = body?.trim().orEmpty()
         if (text.isEmpty()) return RemoteResult.SchemaChanged("响应为空")
         if (text.startsWith("<")) return RemoteResult.SchemaChanged("响应是 HTML 而不是 JSON（可能被重定向到登录页）")
@@ -47,15 +50,19 @@ object StuPunchParser {
         val data = root["data"] as? JsonArray
             ?: return RemoteResult.SchemaChanged("缺少 data 数组（顶层字段：${root.keys.take(8).joinToString(",")}）")
 
+        val count = (root["count"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+            ?.takeIf { it >= 0 }
+            ?: return RemoteResult.SchemaChanged("缺少有效的 count，无法确认刷卡记录是否完整")
+
         val punches = data.mapNotNull { element ->
             (element as? JsonObject)?.let(::toPunch)
         }
 
-        // data 非空但一条都解析不出来 => 结构变了。
-        if (data.isNotEmpty() && punches.isEmpty()) {
-            return RemoteResult.SchemaChanged("data 有 ${data.size} 条，但没有一条能解析出 swipeTime")
+        // A skipped gate event changes the in/out pairing; never publish a partial page.
+        if (punches.size != data.size) {
+            return RemoteResult.SchemaChanged("刷卡记录不完整：${data.size - punches.size}/${data.size} 条无法解析 swipeTime")
         }
-        return RemoteResult.Success(punches)
+        return RemoteResult.Success(StuPunchPage(punches, count))
     }
 
     private fun toPunch(row: JsonObject): AttendancePunch? {
@@ -84,3 +91,5 @@ object StuPunchParser {
     private fun JsonObject.string(key: String): String? =
         (this[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
 }
+
+data class StuPunchPage(val punches: List<AttendancePunch>, val totalCount: Int)

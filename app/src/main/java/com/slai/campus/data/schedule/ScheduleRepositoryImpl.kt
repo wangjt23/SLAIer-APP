@@ -21,6 +21,7 @@ import com.slai.campus.data.sis.SisRemoteDataSource
 import com.slai.campus.data.sis.SisScheduleParser
 import com.slai.campus.data.sis.SisTimetableParsed
 import com.slai.campus.data.sis.SisWebViewDataSource
+import com.slai.campus.data.sis.resolveSemesterAnchor
 import com.slai.campus.data.provider.GenericTimetableParser
 import com.slai.campus.data.provider.ProviderExecutor
 import com.slai.campus.data.provider.ProviderStore
@@ -47,7 +48,6 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
-import java.time.temporal.TemporalAdjusters
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -115,15 +115,9 @@ class ScheduleRepositoryImpl @Inject constructor(
     override fun observeToday(): Flow<List<ClassOccurrence>> =
         timeProvider.observeDate().flatMapLatest { date -> observeRange(date, date) }
 
-    override fun observeWeek(): Flow<List<ClassOccurrence>> {
-        val monday = timeProvider.today()
-            .with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
-        return observeRange(monday, monday.plusDays(6))
-    }
-
     override fun observeRange(from: LocalDate, to: LocalDate): Flow<List<ClassOccurrence>> =
         sessionManager.state
-            .map { it.accountHash }
+            .map { it.accountHashOf(SchoolSystem.SIS) }
             .distinctUntilChanged()
             .flatMapLatest { hash ->
                 if (hash.isNullOrBlank()) {
@@ -135,7 +129,7 @@ class ScheduleRepositoryImpl @Inject constructor(
 
     override fun observeSyncState(): Flow<SyncState> =
         sessionManager.state
-            .map { it.accountHash }
+            .map { it.accountHashOf(SchoolSystem.SIS) }
             .distinctUntilChanged()
             .flatMapLatest { hash ->
                 if (hash.isNullOrBlank()) {
@@ -161,12 +155,6 @@ class ScheduleRepositoryImpl @Inject constructor(
     override fun observePhase(): Flow<RefreshPhase> = phase.asStateFlow()
 
     override fun observeRefreshTrace(): Flow<List<String>> = refreshTrace.asStateFlow()
-
-    override suspend fun snapshotUpcoming(from: LocalDate, days: Int): List<ClassOccurrence> =
-        withContext(io) {
-            val hash = sessionManager.current().accountHash ?: return@withContext emptyList()
-            scheduleDao.rangeOnce(hash, from, from.plusDays(days.toLong() - 1)).map { it.toDomain() }
-        }
 
     // ---------------------------------------------------------------------------------------
     // Refresh
@@ -202,7 +190,11 @@ class ScheduleRepositoryImpl @Inject constructor(
     }
 
     private suspend fun doRefresh(): RefreshResult {
-        val accountHash = sessionManager.requireAccountHash()
+        val accountHash = sessionManager.requireAccountHash(SchoolSystem.SIS)
+        val accountVersion = sessionManager.accountVersion(SchoolSystem.SIS)
+        val owner = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val canContinue = { owner?.isActive != false && sessionManager.accountVersion(SchoolSystem.SIS) == accountVersion }
+        val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.SIS)
         val attemptedAt = System.currentTimeMillis()
         refreshTrace.value = emptyList()
         trace("start: accountHash=${accountHash.take(8)}… today=${timeProvider.today()}")
@@ -227,14 +219,15 @@ class ScheduleRepositoryImpl @Inject constructor(
         }.getOrDefault(emptyList())
         trace("providers=${knownProviders.size}${knownProviders.joinToString("") { " [${it.name}]" }}")
 
-        val (storedYear, storedTerm) = sessionStore.semesterCodes()
-        val (storedAnchor, anchorConfirmed) = sessionStore.semesterAnchor()
+        val storedConfiguration = sessionStore.semesterConfiguration()
+        val storedYear = storedConfiguration.year
+        val storedTerm = storedConfiguration.term
+        val (storedAnchor, anchorConfirmed) = storedConfiguration.anchorFor(storedYear, storedTerm)
         trace("stored: year=$storedYear term=$storedTerm anchor=$storedAnchor confirmed=$anchorConfirmed")
 
-        // A learned provider plus a confirmed anchor means we already know the term: skip the page
-        // round-trip entirely so the common case is one request.
-        val canSkipDiscovery = knownProviders.isNotEmpty() &&
-            !storedYear.isNullOrBlank() && !storedTerm.isNullOrBlank() && anchorConfirmed && storedAnchor != null
+        // A cached term is reusable for one day, even when its anchor was observed rather than
+        // user-confirmed. A new term cannot inherit the previous term's confirmation.
+        val canSkipDiscovery = knownProviders.isNotEmpty() && storedConfiguration.canReuse(attemptedAt)
 
         val semester: Semester = if (canSkipDiscovery) {
             trace("semester: using STORED term/anchor (discovery skipped)")
@@ -261,13 +254,13 @@ class ScheduleRepositoryImpl @Inject constructor(
                 trace("session gone; attempting silent SSO renewal")
                 // Usually only the *application* session timed out while AD FS still remembers the
                 // user, in which case walking the SSO chain silently gets a new one — no typing.
-                val refreshed = trySilentRenewal(baseUrl)
+                val refreshed = trySilentRenewal(baseUrl) { sessionManager.responseIsCurrent(SchoolSystem.SIS, accountVersion, authenticationVersion) }
                 if (refreshed != null) {
                     probe = refreshed
                     trace("silent renewal OK: xnm=${refreshed.term?.xnm} xqm=${refreshed.term?.xqm}")
                 } else {
                     trace("silent renewal failed -> 需要重新登录")
-                    sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                    if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                     recordAttempt(accountHash, attemptedAt, "session expired (current-semester probe)")
                     return RefreshResult.SessionExpired
                 }
@@ -276,56 +269,61 @@ class ScheduleRepositoryImpl @Inject constructor(
 
             val fallback = com.slai.campus.data.sis.SemesterCalendarResolver
                 .estimateTermFromDate(timeProvider.today())
-            val year = fromServer?.xnm ?: storedYear ?: fallback.first
-            val term = fromServer?.xqm ?: storedTerm ?: fallback.second
             val fromWeek = fromServer?.week?.let {
                 com.slai.campus.data.sis.SemesterCalendarResolver.fromObservedWeek(it, timeProvider.today())
             }
-            trace("term: year=$year term=$term (fromServer=${fromServer != null}) fromWeek=$fromWeek")
 
-            // Page discovery is still attempted, but only to find the week anchor; a failure here no
-            // longer blocks the sync.
-            val discovery = runCatching { sisRemote.discoverSemester(baseUrl, deadline) }
-                .getOrElse { com.slai.campus.data.sis.SemesterDiscovery() }
+            // The current-term endpoint usually also supplies the week; avoid a redundant page walk.
+            val discovery = if (fromServer != null && (fromWeek != null ||
+                    storedConfiguration.anchorFor(fromServer.xnm, fromServer.xqm).first != null)) {
+                com.slai.campus.data.sis.SemesterDiscovery()
+            } else {
+                runCatching { sisRemote.discoverSemester(baseUrl, deadline, canContinue) }
+                    .getOrElse {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        com.slai.campus.data.sis.SemesterDiscovery()
+                    }
+            }
             trace("discovery: needsLogin=${discovery.needsLogin} pageAnchor=${discovery.semester.firstWeekMonday}")
 
             if (discovery.needsLogin && fromServer == null) {
                 trace("discovery says logged out -> 需要重新登录")
-                sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                 recordAttempt(accountHash, attemptedAt, "session expired during discovery")
                 return RefreshResult.SessionExpired
             }
 
-            /*
-             * Anchor priority, identical to `SisRemoteDataSource.resolveSemester`.
-             *
-             * These two used to disagree: the refresh preferred the *stored* anchor unconditionally,
-             * while the diagnostics path preferred the freshly observed week. That is how the
-             * diagnostic could report a perfect success (correct anchor, 84 occurrences) while the
-             * real refresh silently expanded the whole timetable onto the wrong dates and the current
-             * week came out empty.
-             */
-            val anchor = when {
-                anchorConfirmed && storedAnchor != null -> storedAnchor
-                fromWeek != null -> fromWeek
-                discovery.semester.firstWeekMonday != null -> discovery.semester.firstWeekMonday
-                storedAnchor != null -> storedAnchor
-                else -> com.slai.campus.data.sis.SemesterCalendarResolver.estimate(year, term)
+            val pageYear = discovery.semester.academicYear
+            val pageTerm = discovery.semester.termCode
+            if (fromServer == null && (pageYear.isNullOrBlank() || pageTerm.isNullOrBlank()) &&
+                !storedYear.isNullOrBlank() && !storedTerm.isNullOrBlank()) {
+                recordAttempt(accountHash, attemptedAt, "current semester could not be verified")
+                return RefreshResult.Failed("无法确认当前学期，已保留原有课表，请稍后刷新")
             }
-            trace("anchor(week-1 Monday)=$anchor  [source=${when {
-                anchorConfirmed && storedAnchor != null -> "stored+confirmed"
-                fromWeek != null -> "server week"
-                discovery.semester.firstWeekMonday != null -> "page select"
-                storedAnchor != null -> "stored"
-                else -> "estimate"
-            }}]")
+            val year = fromServer?.xnm ?: pageYear ?: fallback.first
+            val term = fromServer?.xqm ?: pageTerm ?: fallback.second
+            val (matchingAnchor, matchingConfirmation) = storedConfiguration.anchorFor(year, term)
+            trace("term: year=$year term=$term (fromServer=${fromServer != null}) fromWeek=$fromWeek")
 
-            if (!storedYear.isNullOrBlank() || fromServer != null) {
-                sessionStore.setSemesterCodes(year, term)
-            }
-            if (anchor != null) {
-                sessionStore.setSemesterAnchor(anchor, confirmed = anchorConfirmed || fromWeek != null)
-            }
+            val resolvedAnchor = resolveSemesterAnchor(
+                storedAnchor = matchingAnchor,
+                confirmed = matchingConfirmation,
+                observedAnchor = fromWeek,
+                pageAnchor = discovery.semester.firstWeekMonday.takeIf {
+                    (pageYear == null || pageYear == year) && (pageTerm == null || pageTerm == term)
+                },
+                academicYear = year,
+                termCode = term
+            )
+            val anchor = resolvedAnchor.monday
+            trace("anchor(week-1 Monday)=$anchor  [source=${resolvedAnchor.source}]")
+
+            sessionStore.setSemesterConfiguration(
+                year, term, anchor,
+                confirmed = matchingConfirmation && anchor == matchingAnchor,
+                verifiedAt = attemptedAt.takeIf { fromServer != null ||
+                    (!pageYear.isNullOrBlank() && !pageTerm.isNullOrBlank()) }
+            )
 
             Semester(
                 academicYear = year,
@@ -336,23 +334,43 @@ class ScheduleRepositoryImpl @Inject constructor(
         }
         trace("semester resolved: $semester")
 
+        // This deployment's timetable JSON has an empty sjkList. Fetch the school's period table
+        // once before either parsing path, so a working learned endpoint gets the same real times
+        // as the built-in endpoint rather than silently using the generic fallback.
+        if (!canContinue()) return RefreshResult.Failed("账号已变化，已停止旧会话的课表刷新")
+        val periodTimes = runCatching {
+            sisRemote.fetchPeriodTimes(
+                baseUrl,
+                semester.academicYear.orEmpty(),
+                semester.termCode.orEmpty(),
+                deadline,
+                canContinue
+            )
+        }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            emptyList()
+        }
+        if (!canContinue()) return RefreshResult.Failed("账号已变化，已停止旧会话的课表刷新")
+        trace("period times: ${periodTimes.size} slots")
+
         // 2) Configured / auto-learned providers run first: they encode the *real* endpoint, whereas
         //    the built-in candidates are only a best guess at the vendor's default paths.
         phase.value = RefreshPhase.READING_PROVIDER
         for (provider in knownProviders) {
+            if (!canContinue()) return RefreshResult.Failed("账号已变化，已停止旧会话的课表刷新")
             if (System.currentTimeMillis() > deadline) break
             val response = providerExecutor.execute(provider, semester)
             trace("provider ${provider.name}: status=${response.status} ${response.durationMs}ms")
 
             if (response.error != null) continue
             if (response.status == 401 || response.status == 403) {
-                sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                 recordAttempt(accountHash, attemptedAt, "session expired (provider)")
                 return RefreshResult.SessionExpired
             }
             if (response.status in 300..399) {
                 if (SisScheduleParser.isLoginUrl(response.finalUrl)) {
-                    sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                    if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                     recordAttempt(accountHash, attemptedAt, "session expired (provider redirect)")
                     return RefreshResult.SessionExpired
                 }
@@ -365,7 +383,7 @@ class ScheduleRepositoryImpl @Inject constructor(
             }
             if (!response.isSuccess) continue
             if (SisScheduleParser.looksLikeLoginPage(response.body)) {
-                sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                 recordAttempt(accountHash, attemptedAt, "session expired (provider login page)")
                 return RefreshResult.SessionExpired
             }
@@ -375,26 +393,16 @@ class ScheduleRepositoryImpl @Inject constructor(
                 provider = provider,
                 semester = semester,
                 accountHash = accountHash,
-                source = ScheduleSource.SIS_PROVIDER
+                source = ScheduleSource.SIS_PROVIDER,
+                periodTimes = periodTimes
             )
             if (parsed is RemoteResult.Success) {
-                /*
-                 * A provider that "succeeds" with zero rows must NOT be allowed to end the refresh.
-                 *
-                 * `GenericTimetableParser` treats an empty array at `rowsPath` as a genuine empty
-                 * timetable and returns Success(occurrences = []). Persisting that calls
-                 * `replaceAll`, which deletes every cached row and inserts nothing — so the home
-                 * screen said 「已同步」 while the week view went empty, and it happened again on
-                 * every refresh. Falling through lets the built-in ZFSoft path, which is known to
-                 * return the real 6 courses, have its turn.
-                 */
-                if (parsed.data.occurrences.isEmpty()) {
+                if (!canReplaceTimetable(parsed.data, fullSemester = true)) {
                     trace("provider ${provider.name}: 0 rows -> ignoring it, continuing")
                     continue
                 }
-                sessionManager.set(SchoolSystem.SIS, SessionState.AUTHENTICATED)
                 return persist(
-                    accountHash, parsed.data, IntegrationMode.NATIVE_API, attemptedAt, fullSemester = true
+                    accountHash, accountVersion, parsed.data, IntegrationMode.NATIVE_API, attemptedAt, fullSemester = true
                 )
             }
             trace("provider ${provider.name} rejected: ${parsed.describe()}")
@@ -402,15 +410,6 @@ class ScheduleRepositoryImpl @Inject constructor(
 
         // 3) Built-in ZFSoft candidates.
         phase.value = RefreshPhase.NATIVE
-        // `sjkList` is empty on this deployment, so the period times come from their own endpoint.
-        val periodTimes = runCatching {
-            sisRemote.fetchPeriodTimes(
-                baseUrl,
-                semester.academicYear.orEmpty(),
-                semester.termCode.orEmpty()
-            )
-        }.getOrDefault(emptyList())
-        trace("period times: ${periodTimes.size} slots")
         if (lastProviderNote != null) trace("provider note: $lastProviderNote")
         val native = runCatching {
             sisRemote.fetchTimetable(baseUrl, semester, accountHash, deadline, periodTimes)
@@ -427,27 +426,25 @@ class ScheduleRepositoryImpl @Inject constructor(
 
         when (val result = native.result) {
             is RemoteResult.Success -> {
-                sessionManager.set(SchoolSystem.SIS, SessionState.AUTHENTICATED)
-                return persist(accountHash, result.data, IntegrationMode.NATIVE_API, attemptedAt, fullSemester = true)
+                return persist(accountHash, accountVersion, result.data, IntegrationMode.NATIVE_API, attemptedAt, fullSemester = true)
             }
             RemoteResult.SessionExpired -> {
                 // Reaching here with an expired session means discovery was skipped (a learned
                 // provider plus a confirmed anchor), so this is the first sign the session died.
                 // Give the silent SSO renewal one shot before asking the user for anything.
-                if (trySilentRenewal(baseUrl) != null) {
+                if (trySilentRenewal(baseUrl) { sessionManager.responseIsCurrent(SchoolSystem.SIS, accountVersion, authenticationVersion) } != null) {
                     val retry = runCatching {
                         sisRemote.fetchTimetable(baseUrl, semester, accountHash, deadline, periodTimes)
                     }.getOrNull()
                     val retried = retry?.result
                     if (retried is RemoteResult.Success) {
-                        sessionManager.set(SchoolSystem.SIS, SessionState.AUTHENTICATED)
                         return persist(
-                            accountHash, retried.data, IntegrationMode.NATIVE_API,
+                            accountHash, accountVersion, retried.data, IntegrationMode.NATIVE_API,
                             attemptedAt, fullSemester = true
                         )
                     }
                 }
-                sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                 recordAttempt(accountHash, attemptedAt, "session expired")
                 return RefreshResult.SessionExpired
             }
@@ -456,18 +453,18 @@ class ScheduleRepositoryImpl @Inject constructor(
 
         // 4) WebView extraction.
         phase.value = RefreshPhase.WEBVIEW
-        val webResult = runCatching { sisWebView.fetchTimetable(baseUrl, semester, accountHash) }
+        val webResult = runCatching { sisWebView.fetchTimetable(baseUrl, semester, accountHash, canContinue) }
             .getOrElse { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 trace("webview fetch threw: ${error.javaClass.simpleName}")
                 RemoteResult.UnknownError(error.javaClass.simpleName)
             }
 
         when (webResult) {
             is RemoteResult.Success -> {
-                sessionManager.set(SchoolSystem.SIS, SessionState.AUTHENTICATED)
                 val full = webResult.data.occurrences.all { it.source == ScheduleSource.SIS_WEBVIEW_XHR }
                 return persist(
-                    accountHash,
+                    accountHash, accountVersion,
                     webResult.data,
                     IntegrationMode.WEBVIEW_EXTRACT,
                     attemptedAt,
@@ -475,7 +472,7 @@ class ScheduleRepositoryImpl @Inject constructor(
                 )
             }
             RemoteResult.SessionExpired -> {
-                sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED)
+                if (!sessionManager.set(SchoolSystem.SIS, SessionState.EXPIRED, accountVersion, authenticationVersion)) return RefreshResult.Failed("会话已更新，已忽略旧响应；请刷新")
                 recordAttempt(accountHash, attemptedAt, "session expired during extraction")
                 return RefreshResult.SessionExpired
             }
@@ -506,13 +503,15 @@ class ScheduleRepositoryImpl @Inject constructor(
      * wants credentials — in which case only the user can help.
      */
     private suspend fun trySilentRenewal(
-        baseUrl: String
+        baseUrl: String,
+        canContinue: () -> Boolean
     ): com.slai.campus.data.sis.SemesterProbe? {
-        val walked = runCatching { sisRemote.renewSession(baseUrl) }.getOrDefault(false)
-        if (!walked) return null
+        if (!canContinue()) return null
+        val walked = runCatching { sisRemote.renewSession(baseUrl, canContinue) }.getOrDefault(false)
+        if (!walked || !canContinue()) return null
         val probe = runCatching { sisRemote.probeCurrentSemester(baseUrl) }
             .getOrNull() ?: return null
-        return if (!probe.sessionExpired && probe.term != null) {
+        return if (canContinue() && !probe.sessionExpired && probe.term != null) {
             AppLog.i("silent renewal succeeded: session is alive again")
             probe
         } else {
@@ -524,49 +523,44 @@ class ScheduleRepositoryImpl @Inject constructor(
     /** Persists a validated payload; this is the only place cached rows are replaced. */
     private suspend fun persist(
         accountHash: String,
+        accountVersion: Long,
         parsed: SisTimetableParsed,
         mode: IntegrationMode,
         attemptedAt: Long,
         fullSemester: Boolean
     ): RefreshResult {
         phase.value = RefreshPhase.SAVING
-        val rows = parsed.occurrences.map { it.toEntity(accountHash, attemptedAt) }
-        trace("persist: ${rows.size} row(s) mode=$mode fullSemester=$fullSemester " +
-            "rawItems=${parsed.rawItemCount} skipped=${parsed.skippedRows}")
-
-        /*
-         * A success with zero rows must never clear the cache.
-         *
-         * `replaceAll` deletes first, so accepting an empty payload would silently wipe a perfectly
-         * good timetable and then report 「已同步」 — the user sees an empty week and no error
-         * anywhere. "Confirmed empty" is already handled upstream: `SisScheduleParser` only reports
-         * Success when the payload looks like a real timetable response.
-         */
-        if (rows.isEmpty()) {
+        // Only a full, validated school timetable may explicitly clear a semester. An empty
+        // generic provider array or an empty DOM week is insufficient evidence.
+        if (!canReplaceTimetable(parsed, fullSemester)) {
             trace("refusing to persist 0 rows; keeping the previous cache")
             recordAttempt(accountHash, attemptedAt, "payload contained 0 rows")
             return RefreshResult.SchemaChanged("服务器返回了 0 条课程（已保留原有缓存）")
         }
 
-        if (fullSemester) {
-            scheduleDao.replaceAll(accountHash, rows)
-        } else {
-            val dates = parsed.occurrences.map { it.date }.distinct()
-            scheduleDao.replaceDates(accountHash, dates, rows)
-        }
-
-        syncMetaDao.upsert(
-            SyncMetaEntity(
-                accountHash = accountHash,
-                system = SchoolSystem.SIS.key,
-                lastSuccessAt = System.currentTimeMillis(),
-                lastAttemptAt = attemptedAt,
-                parserVersion = SisConfig.PARSER_VERSION,
-                lastError = parsed.warning,
-                integrationMode = mode.name,
-                semesterFirstWeekMonday = null
+        val verifiedHash = parsed.studentId?.let(com.slai.campus.core.session.AccountHasher::hash)
+        val saved = sessionManager.withAccount(SchoolSystem.SIS, verifiedHash, accountVersion) { owner ->
+            // Generate IDs after selecting the server-proved owner, including the very first sync.
+            val rows = parsed.occurrences.map { it.toEntity(owner, attemptedAt) }
+            trace("persist: ${rows.size} row(s) mode=$mode fullSemester=$fullSemester")
+            if (fullSemester) scheduleDao.replaceAll(owner, rows)
+            else scheduleDao.replaceDates(owner, parsed.occurrences.map { it.date }.distinct(), rows)
+            syncMetaDao.upsert(
+                SyncMetaEntity(
+                    accountHash = owner,
+                    system = SchoolSystem.SIS.key,
+                    lastSuccessAt = System.currentTimeMillis(),
+                    lastAttemptAt = attemptedAt,
+                    parserVersion = SisConfig.PARSER_VERSION,
+                    lastError = parsed.warning,
+                    integrationMode = mode.name,
+                    semesterFirstWeekMonday = null
+                )
             )
-        )
+            sessionManager.set(SchoolSystem.SIS, SessionState.AUTHENTICATED)
+            parsed.studentId?.let { sessionStore.setStudentIdHint(it) }
+            RefreshResult.Success(added = rows.size, total = rows.size)
+        } ?: return RefreshResult.Failed("账号已变化，已忽略旧会话的课表响应")
         sessionStore.setIntegrationMode(SchoolSystem.SIS, mode)
 
         // Self-correcting: the payload says which term it answered for.
@@ -574,20 +568,12 @@ class ScheduleRepositoryImpl @Inject constructor(
             sessionStore.setSemesterCodes(year, term)
         }
 
-        // A discovered student id re-partitions the cache; the rows just written follow the new key.
-        if (parsed.studentId != null) {
-            sessionManager.onStudentIdDiscovered(parsed.studentId)
-        }
-
-        trace("synced: ${rows.size} rows via $mode (fullSemester=$fullSemester)")
-        if (rows.isNotEmpty()) {
-            trace("dates: ${rows.minOf { it.date }} … ${rows.maxOf { it.date }}")
-        }
+        trace("synced: ${parsed.occurrences.size} rows via $mode (fullSemester=$fullSemester)")
 
         runCatching { reminderScheduler.rescheduleFromCache() }
             .onFailure { AppLog.w("reminder reschedule failed: ${it.javaClass.simpleName}") }
 
-        return RefreshResult.Success(added = rows.size, total = rows.size)
+        return saved
     }
 
     private suspend fun recordAttempt(accountHash: String, attemptedAt: Long, error: String) {
@@ -617,7 +603,7 @@ class ScheduleRepositoryImpl @Inject constructor(
     }
 
     private fun ClassOccurrence.toEntity(accountHash: String, updatedAt: Long) = CourseOccurrenceEntity(
-        id = id,
+        id = accountCacheId(accountHash),
         accountHash = accountHash,
         courseName = courseName,
         teacher = teacher,

@@ -1,6 +1,7 @@
 package com.slai.campus.data.stu
 
 import com.google.common.truth.Truth.assertThat
+import com.slai.campus.core.network.CookieWritePermit
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
@@ -8,6 +9,29 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
 
 class StuSessionRecoveryTest {
+    @Test fun `revoked renewal does not send even its first request`() {
+        val visited = mutableListOf<String>()
+        assertThat(renewStuSession(client(emptyMap(), visited), "https://stu.slai.edu.cn", canContinue = { false })).isFalse()
+        assertThat(visited).isEmpty()
+    }
+
+    @Test fun `account changes during first response prevent following the old OAuth redirect`() {
+        var permitted = true
+        var calls = 0
+        val client = OkHttpClient.Builder().followRedirects(false).addInterceptor { chain ->
+            calls++
+            val permit = requireNotNull(chain.request().tag(CookieWritePermit::class.java))
+            assertThat(permit.canWrite()).isTrue()
+            permitted = false
+            assertThat(permit.canWrite()).isFalse()
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(302).message("test").header("Location", "https://stu.slai.edu.cn/sso/code?code=fake")
+                .body("".toResponseBody()).build()
+        }.build()
+        assertThat(renewStuSession(client, "https://stu.slai.edu.cn", canContinue = { permitted })).isFalse()
+        assertThat(calls).isEqualTo(1)
+    }
+
     private fun client(routes: Map<String, Pair<Int, String>>, visited: MutableList<String>): OkHttpClient =
         OkHttpClient.Builder().followRedirects(false).addInterceptor { chain ->
             val url = chain.request().url.toString()

@@ -75,14 +75,9 @@ class SchoolLoginAttempt {
     private var usernameSubmitted = false
     var passwordSubmitted = false
         private set
-    var stopped = false
-        private set
-
     fun claim(password: Boolean): Boolean {
-        if (stopped || passwordSubmitted || (!password && usernameSubmitted)) return false
+        if (passwordSubmitted || (!password && usernameSubmitted)) return false
         if (password) passwordSubmitted = true else usernameSubmitted = true
         return true
     }
-
-    fun stop() { stopped = true }
 }

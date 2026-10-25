@@ -154,8 +154,8 @@ object ProviderLearner {
         val keys = sample.keys.map { it to it.lowercase() }
         val map = mutableMapOf<String, String>()
         Fields.ALL.forEach { logical ->
-            val aliases = Fields.ALIASES[logical] ?: return@forEach
-            val match = keys.firstOrNull { (_, lower) -> lower in aliases.map { it.lowercase() } }
+            val aliases = Fields.ALIASES[logical]?.map { it.lowercase() } ?: return@forEach
+            val match = keys.firstOrNull { (_, lower) -> lower in aliases }
             if (match != null) map[logical] = match.first
         }
         return map

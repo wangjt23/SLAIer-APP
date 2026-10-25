@@ -39,18 +39,23 @@ class SisWebViewDataSource @Inject constructor(
     suspend fun fetchTimetable(
         baseUrl: String,
         semester: Semester,
-        accountHash: String
+        accountHash: String,
+        canContinue: () -> Boolean = { true }
     ): RemoteResult<SisTimetableParsed> = withContext(io) {
         var lastError: RemoteResult<Nothing>? = null
         val notes = StringBuilder()
 
         for (template in SisConfig.timetablePageCandidates) {
+            if (!canContinue()) throw kotlinx.coroutines.CancellationException("school session changed")
             val url = SisConfig.apiUrl(baseUrl, template)
-            val capture = runCatching { extractor.capture(url) }.getOrElse { error ->
+            val capture = runCatching { extractor.capture(url, canContinue = canContinue,
+                cookieHost = com.slai.campus.core.common.SchoolSystem.SIS.host) }.getOrElse { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 AppLog.w("webview capture failed: ${error.javaClass.simpleName}")
                 notes.appendLine("$url -> ${error.javaClass.simpleName}")
                 continue
             }
+            if (!canContinue()) throw kotlinx.coroutines.CancellationException("school session changed")
             notes.appendLine("$url -> final=${capture.finalUrl} bodies=${capture.capturedBodies.size} tables=${capture.tables.size} err=${capture.error}")
 
             if (capture.finalUrl != null && SisScheduleParser.isLoginUrl(capture.finalUrl)) {

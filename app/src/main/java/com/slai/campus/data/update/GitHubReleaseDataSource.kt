@@ -8,6 +8,7 @@ import com.slai.campus.core.session.SessionStore
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import com.slai.campus.domain.update.AppRelease
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -32,6 +33,8 @@ class GitHubReleaseDataSource @Inject constructor(
             if ((manifest.result as? RemoteResult.ServerError)?.code == 404) {
                 fetch(LATEST_URL, ReleaseParser::parse)
             } else manifest
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: UnknownHostException) {
             ReleaseFetch(RemoteResult.NetworkUnavailable("DNS 解析失败"), null)
         } catch (_: SocketTimeoutException) {
@@ -58,17 +61,21 @@ class GitHubReleaseDataSource @Inject constructor(
 
     /** 纯文本资产（目前只有 `SHA256SUMS.txt`）。失败返回 null，由调用方决定是否硬失败。 */
     suspend fun fetchText(url: String): String? = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", USER_AGENT)
                 .get()
                 .build()
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).readUpdateResponse { response ->
                 if (response.isSuccessful) response.body?.string() else null
             }
-        }.onFailure { AppLog.w("fetch asset failed: ${Redactor.redactUrl(url)} ${it.javaClass.simpleName}") }
-            .getOrNull()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            AppLog.w("fetch asset failed: ${Redactor.redactUrl(url)} ${error.javaClass.simpleName}")
+            null
+        }
     }
 
     private companion object {

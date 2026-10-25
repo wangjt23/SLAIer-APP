@@ -186,7 +186,11 @@
     <string name="cd_next_week">Next week</string>
     <string name="attendance_remaining">%1$s to go</string>
     <string name="attendance_goal_reached">Goal reached</string>
-    <string name="attendance_no_record_today">No record for today yet</string>
+    <string name="attendance_no_record_today">No record for this attendance day yet</string>
+    <string name="attendance_day_heading">Attendance · %1$s</string>
+    <string name="attendance_current_day">Current attendance day</string>
+    <string name="attendance_overnight_title">Previous attendance day</string>
+    <string name="attendance_overnight_hint">Showing the previous attendance day until 05:00</string>
     <string name="attendance_month_total">%1$d days recorded this month (%2$s total)</string>
     <string name="attendance_inside">Inside</string>
     <string name="attendance_inside_school">%1$s on site (school record)</string>
@@ -223,7 +227,7 @@
     <string name="attendance_days_count">%1$d days</string>
     <string name="attendance_times_count">%1$d</string>
     <string name="attendance_school_record">School record %1$s</string>
-    <string name="attendance_no_day_data">No data for this day yet. You may not have swiped, or this month has not been synced.</string>
+    <string name="attendance_no_day_data">No data for this attendance day yet. There may be no swipes, or its month has not been synced.</string>
     <string name="attendance_sessions">%1$d sessions, %2$s total</string>
     <string name="attendance_first_in">First entry</string>
     <string name="attendance_last_out">Last exit</string>
@@ -239,7 +243,7 @@
     <string name="cd_next_month">Next month</string>
     <string name="home_today_card">Today · %1$s</string>
     <string name="hero_logo_cd">Shenzhen Loop Area Institute</string>
-    <string name="home_no_swipe_hint">No swipes recorded today yet — tap Refresh to read them from the student system</string>
+    <string name="home_no_swipe_hint">No swipes recorded for this attendance day. Tap Refresh to read them from the student system.</string>
     <string name="home_no_duration">No time accumulated yet</string>
     <string name="settings_anchor_confirmed">Confirmed: %1$s</string>
     <string name="settings_anchor_estimated">Estimated: %1$s</string>
@@ -274,6 +278,7 @@
     <string name="saved_login_enable">Automatic sign-in</string>
     <string name="saved_login_stored">Saved on this device</string>
     <string name="saved_login_paused">Automatic sign-in is paused. Sign in manually to resume it.</string>
+    <string name="saved_login_cooldown">Automatic sign-in cooldown: %1$s remaining</string>
     <string name="saved_login_change">Change credentials</string>
     <string name="saved_login_save">Save and enable</string>
     <string name="saved_login_clear">Clear credentials</string>
@@ -284,4 +289,6 @@
     <string name="automatic_login_running">Signing in automatically…</string>
     <string name="automatic_login_succeeded">Signed in</string>
     <string name="automatic_login_failed">Automatic sign-in failed. Please sign in manually.</string>
+    <string name="automatic_login_cooldown">Automatic sign-in will retry shortly</string>
+    <string name="automatic_login_network_unavailable">Unable to verify sign-in. Will retry when the network changes.</string>
 </resources>

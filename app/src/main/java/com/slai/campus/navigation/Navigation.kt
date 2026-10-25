@@ -9,11 +9,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import com.slai.campus.core.common.SchoolSystem
 
 /** Bottom-navigation destinations. Kept as a tiny enum: the app has four tabs and no deep links. */
-enum class Tab(val labelRes: Int, val icon: ImageVector) {
-    HOME(com.slai.campus.R.string.nav_home, Icons.Default.Home),
-    SCHEDULE(com.slai.campus.R.string.nav_schedule, Icons.Default.CalendarMonth),
-    ATTENDANCE(com.slai.campus.R.string.nav_attendance, Icons.Default.TaskAlt),
-    SETTINGS(com.slai.campus.R.string.nav_settings, Icons.Default.Settings)
+enum class Tab(val labelRes: Int, val icon: ImageVector, val hidesChromeOnScroll: Boolean) {
+    HOME(com.slai.campus.R.string.nav_home, Icons.Default.Home, false),
+    SCHEDULE(com.slai.campus.R.string.nav_schedule, Icons.Default.CalendarMonth, false),
+    ATTENDANCE(com.slai.campus.R.string.nav_attendance, Icons.Default.TaskAlt, true),
+    SETTINGS(com.slai.campus.R.string.nav_settings, Icons.Default.Settings, true)
 }
 
 /**
@@ -38,7 +38,9 @@ sealed interface Overlay {
          * 但**为了看网页**而打开的 WebView 必须显式传 false：那种页面即使顺路走了一遍 SSO，用户也是
          * 站在自己想看的页面上，把他踢回 App 是帮倒忙（见 CampusRoot 里那条"死胡同 → SSO"的兜底）。
          */
-        val closeOnLogin: Boolean = isLoginFlow
+        val closeOnLogin: Boolean = isLoginFlow,
+        /** Separate visits to the same URL must not share a login-completion event or WebView. */
+        val flowId: String = java.util.UUID.randomUUID().toString()
     ) : Overlay
 
     data object Diagnostics : Overlay

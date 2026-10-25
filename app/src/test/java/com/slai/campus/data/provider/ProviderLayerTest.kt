@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.slai.campus.core.common.RemoteResult
 import com.slai.campus.core.common.SchoolSystem
 import com.slai.campus.core.web.CaptureRecord
+import com.slai.campus.data.schedule.canReplaceTimetable
 import com.slai.campus.domain.provider.ApiProvider
 import com.slai.campus.domain.provider.Fields
 import com.slai.campus.domain.provider.ProviderPurpose
@@ -69,21 +70,19 @@ class GenericTimetableParserTest {
         source = ScheduleSource.SIS_PROVIDER
     )
 
-    /**
-     * An empty array at `rowsPath` is reported as a **zero-row success**, and that is exactly the
-     * payload that used to destroy the cache: `ScheduleRepositoryImpl.persist` replaced all rows with
-     * nothing, then reported 「已同步」, and the week view went empty with no error anywhere.
-     *
-     * This test pins the parser's contract so the repository-side guard cannot be "simplified away":
-     * a zero-row Success is *not* proof that the timetable is empty.
-     */
+    /** An arbitrary provider array has no school metadata proving an empty semester. */
     @Test
-    fun `an empty rows array is a zero-row success, not proof of an empty timetable`() {
-        val result = parse("""{"kbList":[]}""")
-        assertThat(result).isInstanceOf(RemoteResult.Success::class.java)
-        val data = (result as RemoteResult.Success).data
-        assertThat(data.occurrences).isEmpty()
-        assertThat(data.rawItemCount).isEqualTo(0)
+    fun `empty generic provider arrays cannot replace cached semester`() {
+        listOf("""{"data":[]}""" to provider(rowsPath = "data"), "[]" to provider(rowsPath = ""))
+            .forEach { (body, definition) ->
+                val result = parse(body, definition)
+                assertThat(result).isInstanceOf(RemoteResult.Success::class.java)
+                val data = (result as RemoteResult.Success).data
+                assertThat(data.occurrences).isEmpty()
+                assertThat(data.rawItemCount).isEqualTo(0)
+                assertThat(data.trustedEmpty).isFalse()
+                assertThat(canReplaceTimetable(data, fullSemester = true)).isFalse()
+            }
     }
 
 
@@ -142,10 +141,20 @@ class GenericTimetableParserTest {
     }
 
     @Test
-    fun `empty recognised array is a genuine empty timetable`() {
-        val result = parse("""{"kbList":[]}""")
+    fun `empty school semester needs metadata and matching reported term to replace cache`() {
+        val schoolEmpty = """{"kbList":[],"xqjmcMap":{"1":"星期一"},"xsxx":{"XNM":"2026","XQM":"3"}}"""
+        val result = parse(schoolEmpty)
         assertThat(result).isInstanceOf(RemoteResult.Success::class.java)
-        assertThat((result as RemoteResult.Success).data.occurrences).isEmpty()
+        val data = (result as RemoteResult.Success).data
+        assertThat(data.occurrences).isEmpty()
+        assertThat(data.trustedEmpty).isTrue()
+        assertThat(data.reportedTerm).isEqualTo("2026" to "3")
+        assertThat(canReplaceTimetable(data, fullSemester = true)).isTrue()
+        assertThat(canReplaceTimetable(data, fullSemester = false)).isFalse()
+
+        assertThat(parse("""{"kbList":[]}""")).isInstanceOf(RemoteResult.SchemaChanged::class.java)
+        assertThat(parse(schoolEmpty.replace("2026", "2025")))
+            .isInstanceOf(RemoteResult.SchemaChanged::class.java)
     }
 
     @Test

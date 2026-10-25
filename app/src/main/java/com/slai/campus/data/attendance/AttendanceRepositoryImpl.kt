@@ -4,7 +4,6 @@ import com.slai.campus.core.common.AppLog
 import com.slai.campus.core.common.IoDispatcher
 import com.slai.campus.core.common.RemoteResult
 import com.slai.campus.core.common.SchoolSystem
-import com.slai.campus.core.common.TimeProvider
 import com.slai.campus.core.common.describe
 import com.slai.campus.core.database.AttendanceDao
 import com.slai.campus.core.database.AttendanceMetaDao
@@ -24,15 +23,17 @@ import com.slai.campus.domain.attendance.AttendancePunch
 import com.slai.campus.domain.attendance.PunchDirection
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
+import com.slai.campus.domain.attendance.AttendanceRefreshScope
+import com.slai.campus.domain.attendance.AttendanceRefreshOrigin
+import com.slai.campus.domain.attendance.AttendanceRefreshUpdates
+import com.slai.campus.domain.attendance.combineAttendanceRefreshResults
 import com.slai.campus.domain.attendance.networkFailureResult
 import com.slai.campus.domain.attendance.AttendanceRepository
-import com.slai.campus.domain.attendance.AttendanceSyncState
 import com.slai.campus.data.stu.StuAttendanceParser
 import com.slai.campus.domain.attendance.AttendanceWeek
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -64,17 +65,49 @@ class AttendanceRepositoryImpl @Inject constructor(
     private val dataSource: StuAttendanceDataSource,
     private val stuRemote: com.slai.campus.data.stu.StuRemoteDataSource,
     private val networkMonitor: NetworkMonitor,
-    private val timeProvider: TimeProvider,
     @IoDispatcher private val io: CoroutineDispatcher
 ) : AttendanceRepository {
 
     private val refreshMutex = Mutex()
     private val punchMutex = Mutex()
-    private val punchSyncState = kotlinx.coroutines.flow.MutableStateFlow(AttendanceSyncState())
+    private val completeRefreshMutex = Mutex()
+    private val refreshResults = AttendanceRefreshUpdates()
+    override val refreshUpdates = refreshResults.state
+
+    private class RefreshEvidence {
+        var authenticationVersion: Long? = null
+    }
+
+    override suspend fun refreshWithPunches(month: String, from: LocalDate, to: LocalDate,
+                                          origin: AttendanceRefreshOrigin): AttendanceRefreshResult =
+        completeRefreshMutex.withLock {
+            val startedVersion = sessionManager.accountVersion(SchoolSystem.STU)
+            val evidence = RefreshEvidence()
+            val summary = refreshMonth(month, evidence)
+            if (summary is AttendanceRefreshResult.Superseded) return@withLock summary
+            if (evidence.authenticationVersion == null) return@withLock summary
+            val version = sessionManager.accountVersion(SchoolSystem.STU)
+            val owner = sessionManager.current().accountHashOf(SchoolSystem.STU)
+            if (sessionManager.accountVersion(SchoolSystem.STU) != version || (!summary.isSuccess &&
+                    evidence.authenticationVersion != sessionManager.authenticationVersion(SchoolSystem.STU))) {
+                return@withLock AttendanceRefreshResult.Superseded
+            }
+            val result = if (summary is AttendanceRefreshResult.SessionExpired) summary else {
+                val punches = refreshPunchRange(from, to, evidence)
+                if (sessionManager.accountVersion(SchoolSystem.STU) != version) AttendanceRefreshResult.Superseded
+                else combineAttendanceRefreshResults(summary, punches)
+            }
+            if (owner == null) return@withLock result
+            sessionManager.withCurrentAccount(SchoolSystem.STU, owner, startedVersion,
+                if (result.isSuccess) null else evidence.authenticationVersion) { acceptedOwner, acceptedVersion ->
+                refreshResults.publish(AttendanceRefreshScope(month, from, to), acceptedOwner, acceptedVersion, result, origin)
+                result
+            } ?: AttendanceRefreshResult.Superseded
+        }
 
     override fun observeDay(date: LocalDate): Flow<AttendanceRecord?> =
         sessionManager.state
-            .map { it.accountHash }
+            .map { it.accountHashOf(SchoolSystem.STU) }
             .distinctUntilChanged()
             .flatMapLatest { hash ->
                 if (hash.isNullOrBlank()) {
@@ -86,7 +119,7 @@ class AttendanceRepositoryImpl @Inject constructor(
 
     override fun observeMonth(month: String): Flow<AttendanceMonth> =
         sessionManager.state
-            .map { it.accountHash }
+            .map { it.accountHashOf(SchoolSystem.STU) }
             .distinctUntilChanged()
             .flatMapLatest { hash ->
                 if (hash.isNullOrBlank()) {
@@ -99,39 +132,9 @@ class AttendanceRepositoryImpl @Inject constructor(
                 }
             }
 
-    override fun observeSyncState(): Flow<AttendanceSyncState> =
-        sessionManager.state
-            .map { it.accountHash }
-            .distinctUntilChanged()
-            .flatMapLatest { hash ->
-                if (hash.isNullOrBlank()) {
-                    flowOf(AttendanceSyncState())
-                } else {
-                    attendanceMetaDao.observe(hash, dataSource.currentMonth()).map { meta ->
-                        AttendanceSyncState(
-                            lastSuccessAt = meta?.lastSuccessAt?.let(java.time.Instant::ofEpochMilli),
-                            lastAttemptAt = meta?.lastAttemptAt?.let(java.time.Instant::ofEpochMilli),
-                            lastError = meta?.lastError
-                        )
-                    }
-                }
-            }
-
-    override fun observePunches(date: LocalDate): Flow<List<AttendancePunch>> =
-        sessionManager.state
-            .map { it.accountHash }
-            .distinctUntilChanged()
-            .flatMapLatest { hash ->
-                if (hash.isNullOrBlank()) {
-                    flowOf(emptyList())
-                } else {
-                    punchDao.observeDay(hash, date).map { rows -> rows.map { it.toDomain() } }
-                }
-            }
-
     override fun observePunches(from: LocalDate, to: LocalDate): Flow<List<AttendancePunch>> =
         sessionManager.state
-            .map { it.accountHash }
+            .map { it.accountHashOf(SchoolSystem.STU) }
             .distinctUntilChanged()
             .flatMapLatest { hash ->
                 if (hash.isNullOrBlank()) {
@@ -141,75 +144,78 @@ class AttendanceRepositoryImpl @Inject constructor(
                 }
             }
 
-    override fun observePunchSyncState(): Flow<AttendanceSyncState> = punchSyncState.asStateFlow()
-
     override suspend fun refreshPunches(from: LocalDate, to: LocalDate): AttendanceRefreshResult =
+        refreshPunchRange(from, to)
+
+    private suspend fun refreshPunchRange(from: LocalDate, to: LocalDate, evidence: RefreshEvidence? = null): AttendanceRefreshResult =
         withContext(io) {
             punchMutex.withLock {
-                val accountHash = sessionManager.requireAccountHash()
+                val accountHash = sessionManager.requireAccountHash(SchoolSystem.STU)
+                val accountVersion = sessionManager.accountVersion(SchoolSystem.STU)
+                val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
+                evidence?.authenticationVersion = authenticationVersion
                 val attemptedAt = System.currentTimeMillis()
 
                 if (!networkMonitor.hasNetwork) {
-                    punchSyncState.value = punchSyncState.value.copy(lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = "offline")
-                    return@withLock AttendanceRefreshResult.Offline(cached = punchDao.countRange(accountHash, from, to) > 0)
+                    val cached = punchDao.countRange(accountHash, from, to) > 0
+                    return@withLock if (sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion))
+                        AttendanceRefreshResult.Offline(cached) else AttendanceRefreshResult.Superseded
                 }
 
                 val baseUrl = StuConfig.baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.STU))
                 var outcome = punchDataSource.fetchPunches(baseUrl, from, to)
-                if (outcome.result is RemoteResult.SessionExpired && stuRemote.renewSession(baseUrl)) {
+                if (outcome.result is RemoteResult.SessionExpired &&
+                    sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion) &&
+                    stuRemote.renewSession(baseUrl, canContinue = {
+                        sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion)
+                    })) {
                     outcome = punchDataSource.fetchPunches(baseUrl, from, to)
                 }
                 AppLog.d("punch fetch $from..$to: ${outcome.result.describe()}")
 
-                when (val result = outcome.result) {
+                if (outcome.result !is RemoteResult.Success &&
+                    !sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion)) {
+                    return@withLock AttendanceRefreshResult.Superseded
+                }
+
+                val refreshResult = when (val result = outcome.result) {
                     is RemoteResult.Success -> {
-                        sessionManager.set(SchoolSystem.STU, SessionState.AUTHENTICATED)
-                        val rows = result.data.map { it.toEntity(accountHash, attemptedAt) }
-                        punchDao.replaceRange(accountHash, from, to, rows)
-                        punchSyncState.value = AttendanceSyncState(
-                            lastSuccessAt = java.time.Instant.now(),
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt)
-                        )
-                        AppLog.i("punches synced $from..$to: ${rows.size} record(s)")
-                        AttendanceRefreshResult.Success(to.toString(), rows.size)
+                        sessionManager.withAccount(SchoolSystem.STU, null, accountVersion) { owner ->
+                            val rows = result.data.map { it.toEntity(owner, attemptedAt) }
+                            punchDao.replaceRange(owner, from, to, rows)
+                            sessionManager.set(SchoolSystem.STU, SessionState.AUTHENTICATED)
+                            evidence?.authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
+                            AppLog.i("punches synced $from..$to: ${rows.size} record(s)")
+                            AttendanceRefreshResult.Success(to.toString(), rows.size)
+                        } ?: AttendanceRefreshResult.Superseded
                     }
                     RemoteResult.SessionExpired -> {
-                        sessionManager.set(SchoolSystem.STU, SessionState.EXPIRED)
-                        punchSyncState.value = punchSyncState.value.copy(
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = "session expired"
-                        )
+                        if (!sessionManager.set(SchoolSystem.STU, SessionState.EXPIRED, accountVersion, authenticationVersion)) {
+                            return@withLock AttendanceRefreshResult.Superseded
+                        }
                         AttendanceRefreshResult.SessionExpired
                     }
                     is RemoteResult.NetworkUnavailable -> {
-                        punchSyncState.value = punchSyncState.value.copy(
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = result.reason
-                        )
                         networkFailureResult(networkMonitor.hasNetwork, punchDao.countRange(accountHash, from, to) > 0, result.reason)
                     }
                     is RemoteResult.SchemaChanged -> {
-                        punchSyncState.value = punchSyncState.value.copy(
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = result.reason
-                        )
                         AttendanceRefreshResult.SchemaChanged(result.reason)
                     }
                     is RemoteResult.ServerError -> {
-                        punchSyncState.value = punchSyncState.value.copy(
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = "HTTP ${result.code}"
-                        )
                         AttendanceRefreshResult.ServerError(result.code)
                     }
                     is RemoteResult.UnknownError -> {
-                        punchSyncState.value = punchSyncState.value.copy(
-                            lastAttemptAt = java.time.Instant.ofEpochMilli(attemptedAt), lastError = result.reason
-                        )
                         AttendanceRefreshResult.Failed(result.reason)
                     }
                 }
+                if (!refreshResult.isSuccess &&
+                    !sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion))
+                    AttendanceRefreshResult.Superseded else refreshResult
             }
         }
 
     private fun AttendancePunch.toEntity(accountHash: String, updatedAt: Long) = AttendancePunchEntity(
-        id = id,
+        id = "$accountHash|$id",
         accountHash = accountHash,
         time = time,
         date = date,
@@ -231,52 +237,68 @@ class AttendanceRepositoryImpl @Inject constructor(
         result = result
     )
 
-    override suspend fun cachedMonths(): List<String> = withContext(io) {
-        val hash = sessionManager.current().accountHash ?: return@withContext emptyList()
-        attendanceMetaDao.all(hash).map { it.month }
-    }
+    override suspend fun refresh(month: String): AttendanceRefreshResult = refreshMonth(month)
 
-    override suspend fun refresh(month: String): AttendanceRefreshResult = withContext(io) {
+    private suspend fun refreshMonth(month: String, evidence: RefreshEvidence? = null): AttendanceRefreshResult = withContext(io) {
         refreshMutex.withLock {
             if (!StuAttendanceDataSource.isValidMonth(month)) {
                 return@withLock AttendanceRefreshResult.Failed("月份格式应为 YYYY-MM")
             }
-            val accountHash = sessionManager.requireAccountHash()
+            val accountHash = sessionManager.requireAccountHash(SchoolSystem.STU)
+            val accountVersion = sessionManager.accountVersion(SchoolSystem.STU)
+            val authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
+            evidence?.authenticationVersion = authenticationVersion
             val attemptedAt = System.currentTimeMillis()
 
             if (!networkMonitor.hasNetwork) {
                 recordAttempt(accountHash, month, attemptedAt, "offline")
-                return@withLock AttendanceRefreshResult.Offline(cached = hasCache(accountHash, month))
+                val cached = hasCache(accountHash, month)
+                return@withLock if (sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion))
+                    AttendanceRefreshResult.Offline(cached) else AttendanceRefreshResult.Superseded
             }
 
             val baseUrl = StuConfig.baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.STU))
             var outcome = dataSource.fetchMonth(baseUrl, month)
-            if (outcome.result is RemoteResult.SessionExpired && stuRemote.renewSession(baseUrl)) {
+            if (outcome.result is RemoteResult.SessionExpired &&
+                sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion) &&
+                stuRemote.renewSession(baseUrl, canContinue = {
+                    sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion)
+                })) {
                 outcome = dataSource.fetchMonth(baseUrl, month)
             }
             AppLog.d("attendance fetch $month: ${outcome.result.describe()}")
 
-            when (val result = outcome.result) {
+            if (outcome.result !is RemoteResult.Success &&
+                !sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion)) {
+                return@withLock AttendanceRefreshResult.Superseded
+            }
+
+            val refreshResult = when (val result = outcome.result) {
                 is RemoteResult.Success -> {
-                    sessionManager.set(SchoolSystem.STU, SessionState.AUTHENTICATED)
-                    val rows = result.data.records.map { it.toEntity(accountHash, month, attemptedAt) }
-                    attendanceDao.replaceMonth(accountHash, month, rows)
-                    attendanceMetaDao.upsert(
-                        AttendanceMetaEntity(
-                            accountHash = accountHash,
-                            month = month,
-                            lastSuccessAt = System.currentTimeMillis(),
-                            lastAttemptAt = attemptedAt,
-                            lastError = null,
-                            stats = result.data.stats.entries.joinToString(";") { "${it.key}=${it.value}" }
+                    sessionManager.withAccount(SchoolSystem.STU, result.data.accountHash, accountVersion) { owner ->
+                        val rows = result.data.records.map { it.toEntity(owner, month, attemptedAt) }
+                        attendanceDao.replaceMonth(owner, month, rows)
+                        attendanceMetaDao.upsert(
+                            AttendanceMetaEntity(
+                                accountHash = owner,
+                                month = month,
+                                lastSuccessAt = System.currentTimeMillis(),
+                                lastAttemptAt = attemptedAt,
+                                lastError = null,
+                                stats = result.data.stats.entries.joinToString(";") { "${it.key}=${it.value}" }
+                            )
                         )
-                    )
-                    AppLog.i("attendance synced $month: ${rows.size} day(s)")
-                    AttendanceRefreshResult.Success(month, rows.size)
+                        sessionManager.set(SchoolSystem.STU, SessionState.AUTHENTICATED)
+                        evidence?.authenticationVersion = sessionManager.authenticationVersion(SchoolSystem.STU)
+                        AppLog.i("attendance synced $month: ${rows.size} day(s)")
+                        AttendanceRefreshResult.Success(month, rows.size)
+                    } ?: AttendanceRefreshResult.Superseded
                 }
 
                 RemoteResult.SessionExpired -> {
-                    sessionManager.set(SchoolSystem.STU, SessionState.EXPIRED)
+                    if (!sessionManager.set(SchoolSystem.STU, SessionState.EXPIRED, accountVersion, authenticationVersion)) {
+                        return@withLock AttendanceRefreshResult.Superseded
+                    }
                     recordAttempt(accountHash, month, attemptedAt, "session expired")
                     AttendanceRefreshResult.SessionExpired
                 }
@@ -306,6 +328,9 @@ class AttendanceRepositoryImpl @Inject constructor(
                     AttendanceRefreshResult.Failed(result.reason)
                 }
             }
+            if (!refreshResult.isSuccess &&
+                !sessionManager.responseIsCurrent(SchoolSystem.STU, accountVersion, authenticationVersion))
+                AttendanceRefreshResult.Superseded else refreshResult
         }
     }
 

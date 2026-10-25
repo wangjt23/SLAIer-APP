@@ -26,9 +26,9 @@ class SchoolLoginTest {
         assertThat(attempt.claim(false)).isFalse()
     }
 
-    @Test fun `captcha or SSL failure permanently stops this flow`() {
+    @Test fun `a remembered password page can submit only once without a username step`() {
         val attempt = SchoolLoginAttempt()
-        attempt.stop()
+        assertThat(attempt.claim(true)).isTrue()
         assertThat(attempt.claim(false)).isFalse()
         assertThat(attempt.claim(true)).isFalse()
     }

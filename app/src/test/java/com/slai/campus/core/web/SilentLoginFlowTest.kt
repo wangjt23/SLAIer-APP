@@ -15,17 +15,17 @@ class SilentLoginFlowTest {
     private class Page : SilentLoginPage {
         override var url: String? = "https://sts.slai.edu.cn/adfs/oauth2/authorize"
         override var failed = false
-        override var loaded = true
         override var generation = 1
         var step = "username"
         var usernameSubmissions = 0
         var passwordSubmissions = 0
+        var submitResult = "submitted"
         var onPassword: () -> Unit = { url = "https://stu.slai.edu.cn/a/index" }
         override suspend fun inspect() = step
         override suspend fun submit(password: Boolean): String {
             if (password) { passwordSubmissions++; onPassword() }
             else { usernameSubmissions++; step = "password" }
-            return "submitted"
+            return submitResult
         }
     }
 
@@ -61,8 +61,18 @@ class SilentLoginFlowTest {
 
     @Test fun `reloaded password form fails without another submission`() = runTest {
         val page = Page().apply { onPassword = { generation++ } }
-        assertThat(runSilentLogin(page, { true }, { false })).isFalse()
+        var manualRequired = false
+        assertThat(runSilentLogin(page, { true }, { false }, onManualRequired = { manualRequired = true })).isFalse()
         assertThat(page.passwordSubmissions).isEqualTo(1)
+        assertThat(manualRequired).isTrue()
+    }
+
+    @Test fun `challenge appearing between inspection and submission requests manual recovery`() = runTest {
+        val page = Page().apply { submitResult = "manual" }
+        var manualRequired = false
+        assertThat(runSilentLogin(page, { true }, { false }, onManualRequired = { manualRequired = true })).isFalse()
+        assertThat(manualRequired).isTrue()
+        assertThat(page.passwordSubmissions).isEqualTo(0)
     }
 
     @Test fun `stuck form times out and does not repeatedly submit`() = runTest {
@@ -109,7 +119,7 @@ class SilentLoginFlowTest {
 
     @Test fun `session success does not wait for onPageFinished or a particular landing path`() = runTest {
         for (url in listOf("https://stu.slai.edu.cn/a", "https://stu.slai.edu.cn/sso/code", "https://stu.slai.edu.cn/portal")) {
-            val page = Page().apply { this.url = url; loaded = false }
+            val page = Page().apply { this.url = url }
             val start = testScheduler.currentTime
             assertThat(runSilentLogin(page, { error("no password needed") }, { delay(100); true })).isTrue()
             assertThat(testScheduler.currentTime - start).isEqualTo(100)
@@ -117,7 +127,7 @@ class SilentLoginFlowTest {
     }
 
     @Test fun `cookies becoming usable during a stuck page finish promptly`() = runTest {
-        val page = Page().apply { loaded = false; step = "none" }
+        val page = Page().apply { step = "none" }
         assertThat(runSilentLogin(page, { error("no form loaded") }, { testScheduler.currentTime >= 2_000 })).isTrue()
         assertThat(testScheduler.currentTime).isLessThan(4_000)
     }
@@ -125,7 +135,6 @@ class SilentLoginFlowTest {
     @Test fun `unresponsive javascript does not block real session confirmation`() = runTest {
         val page = object : SilentLoginPage {
             override val url = "https://sts.slai.edu.cn/adfs/ls/"
-            override val loaded = true
             override val failed = false
             override val generation = 1
             override suspend fun inspect(): String { delay(60_000); return "none" }
@@ -136,7 +145,7 @@ class SilentLoginFlowTest {
     }
 
     @Test fun `SSO-only recovery never requests credentials or a login notice`() = runTest {
-        val page = Page().apply { url = "https://stu.slai.edu.cn/sso/code"; loaded = false }
+        val page = Page().apply { url = "https://stu.slai.edu.cn/sso/code" }
         assertThat(runSilentLogin(page, { error("no password") }, { delay(100); true },
             authorizeCredentials = { error("no login notice or credential read") })).isTrue()
     }
@@ -180,9 +189,4 @@ class SilentLoginFlowTest {
         assertThat(runSilentLogin(page, { error("no password") }, { delay(6_000); true })).isTrue()
     }
 
-    @Test fun `ready DOM can log in before slow images finish loading`() = runTest {
-        val page = Page().apply { loaded = false }
-        assertThat(runSilentLogin(page, { true }, { page.url == "https://stu.slai.edu.cn/a/index" })).isTrue()
-        assertThat(page.passwordSubmissions).isEqualTo(1)
-    }
 }

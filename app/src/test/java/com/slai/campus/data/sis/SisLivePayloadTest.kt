@@ -2,6 +2,9 @@ package com.slai.campus.data.sis
 
 import com.google.common.truth.Truth.assertThat
 import com.slai.campus.core.common.RemoteResult
+import com.slai.campus.data.provider.GenericTimetableParser
+import com.slai.campus.domain.provider.ApiProvider
+import com.slai.campus.domain.provider.Fields
 import com.slai.campus.domain.schedule.ScheduleSource
 import com.slai.campus.domain.schedule.Semester
 import org.junit.Test
@@ -137,6 +140,38 @@ class SisLivePayloadTest {
         val short = parsed.occurrences.first { it.courseName == "中国文化研究" }
         assertThat(short.startTime).isEqualTo(LocalTime.of(18, 30))
         assertThat(short.endTime).isEqualTo(LocalTime.of(20, 15))
+    }
+
+    @Test
+    fun `learned endpoint with empty sjkList uses the same real school times as native`() {
+        val provider = ApiProvider(
+            id = "school", name = "教务课表（学习）", system = "sis", purpose = "timetable",
+            method = "POST", url = "https://sis.slai.edu.cn/api", rowsPath = "kbList",
+            fieldMap = Fields.ZFSOFT_DEFAULTS
+        )
+        val learned = GenericTimetableParser.parse(
+            payload, provider, semester, "acct", ScheduleSource.SIS_PROVIDER, periodTimes
+        ) as RemoteResult.Success
+        val native = (parse() as RemoteResult.Success).data
+        assertThat(learned.data.occurrences.map { it.copy(source = ScheduleSource.SIS_NATIVE) })
+            .containsExactlyElementsIn(native.occurrences).inOrder()
+        assertThat(learned.data.occurrences.first().startTime).isEqualTo(LocalTime.of(9, 30))
+        assertThat(learned.data.occurrences.first().endTime).isEqualTo(LocalTime.of(12, 15))
+    }
+
+    @Test
+    fun `explicitly mapped provider also expands periods using the school's table`() {
+        val provider = ApiProvider(
+            id = "custom", name = "自定义课表", system = "sis", purpose = "timetable",
+            url = "https://sis.slai.edu.cn/api", rowsPath = "rows",
+            fieldMap = mapOf(Fields.COURSE_NAME to "title")
+        )
+        val body = """{"rows":[{"title":"课","xqj":"1","jcs":"1-3","zcd":"1周"}]}"""
+        val parsed = GenericTimetableParser.parse(
+            body, provider, semester, "acct", ScheduleSource.SIS_PROVIDER, periodTimes
+        ) as RemoteResult.Success
+        assertThat(parsed.data.occurrences.single().startTime).isEqualTo(LocalTime.of(9, 30))
+        assertThat(parsed.data.occurrences.single().endTime).isEqualTo(LocalTime.of(12, 15))
     }
 
     @Test

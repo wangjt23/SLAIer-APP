@@ -88,13 +88,13 @@ class DiagnosticsViewModel @Inject constructor(
         val snapshot = sessionManager.probeAll()
         log("SIS: ${snapshot.sis}")
         log("STU: ${snapshot.stu}")
-        log("accountHash: ${AccountHasher.display(snapshot.accountHash)}")
+        log("accountHash: ${AccountHasher.display(snapshot.accountHashOf(SchoolSystem.SIS))}")
     }
 
     fun testSisNative() = runProbe {
         log("=== SIS native timetable request ===")
         val urls = urlProvider.current()
-        val hash = sessionManager.requireAccountHash()
+        val hash = sessionManager.requireAccountHash(SchoolSystem.SIS)
 
         // 0) Cookie 一定先看：到目前为止"课表拉不到"的唯一根因就是这里为空。
         log("cookie @ ${urls.sisBase}: ${cookies.cookieSummary(urls.sisBase)}")
@@ -183,7 +183,7 @@ class DiagnosticsViewModel @Inject constructor(
         lines.forEach { log("   $it") }
 
         // 直接查数据库：分清"没抓到"和"没写进去"
-        val hash = sessionManager.requireAccountHash()
+        val hash = sessionManager.requireAccountHash(SchoolSystem.SIS)
         val today = timeProvider.today()
         val monday = today.with(
             java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY)
@@ -206,7 +206,7 @@ class DiagnosticsViewModel @Inject constructor(
     fun testSisWebView() = runProbe {
         log("=== SIS WebView extraction ===")
         val urls = urlProvider.current()
-        val hash = sessionManager.requireAccountHash()
+        val hash = sessionManager.requireAccountHash(SchoolSystem.SIS)
         val discovery = sisRemote.discoverSemester(urls.sisBase)
         val semester = sisRemote.resolveSemester(urls.sisBase, discovery)
         when (val result = sisWebView.fetchTimetable(urls.sisBase, semester, hash)) {

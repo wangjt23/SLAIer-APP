@@ -10,10 +10,36 @@ import org.junit.Test
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DateRolloverTest {
+    @Test fun `date-time ticks immediately and keeps ticking within the same calendar day`() = runTest {
+        var now = Instant.parse("2026-10-22T16:30:00Z")
+        val zone = ZoneId.of("Asia/Shanghai")
+        val clock = object : Clock() {
+            override fun instant() = now
+            override fun getZone() = zone
+            override fun withZone(zone: ZoneId): Clock = Clock.fixed(now, zone)
+        }
+        val ticks = mutableListOf<LocalDateTime>()
+        backgroundScope.launch { TimeProvider(clock).observeDateTime().collect { ticks += it } }
+        runCurrent()
+        assertThat(ticks).containsExactly(LocalDateTime.parse("2026-10-23T00:30:00"))
+
+        now = now.plusSeconds(30)
+        advanceTimeBy(29_999)
+        runCurrent()
+        assertThat(ticks).hasSize(1)
+        advanceTimeBy(1)
+        runCurrent()
+        assertThat(ticks).containsExactly(
+            LocalDateTime.parse("2026-10-23T00:30:00"),
+            LocalDateTime.parse("2026-10-23T00:30:30")
+        ).inOrder()
+    }
+
     @Test fun `date subscription advances after local midnight without restarting app`() = runTest {
         var now = Instant.parse("2026-09-13T15:59:59Z")
         val zone = ZoneId.of("Asia/Shanghai")

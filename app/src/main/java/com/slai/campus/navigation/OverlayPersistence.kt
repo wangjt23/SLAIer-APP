@@ -39,7 +39,8 @@ object OverlayPersistence {
                     KIND_WEB,
                     overlay.url,
                     overlay.title,
-                    overlay.system?.name.orEmpty()
+                    overlay.system?.name.orEmpty(),
+                    overlay.flowId
                 )
             }
     }
@@ -62,7 +63,9 @@ object OverlayPersistence {
                         ?.let { name -> runCatching { SchoolSystem.valueOf(name) }.getOrNull() },
                     // 恢复出来的永远是"浏览"语义：登录流程与抓包浮层根本不会被编码。
                     isLoginFlow = false,
-                    captureEnabled = false
+                    captureEnabled = false,
+                    flowId = saved.getOrNull(4)?.takeIf { it.isNotBlank() }
+                        ?: java.util.UUID.randomUUID().toString()
                 )
             }
         }

@@ -4,13 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
@@ -29,7 +30,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -54,6 +54,8 @@ import com.slai.campus.navigation.AppNavigator
 import com.slai.campus.navigation.Tab
 import com.slai.campus.ui.currentLocale
 import com.slai.campus.ui.shortDatePatternFor
+import com.slai.campus.ui.components.ScrollChromePage
+import com.slai.campus.ui.components.rememberScrollEndDistance
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,15 +79,20 @@ fun WeekScheduleScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val urls by urlsViewModel.urls.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
 
     // 日期格式跟随语言，而不是写死中文：英文下要显示 "Sep 7 Mon"。
     val dayFormatter = DateTimeFormatter.ofPattern(shortDatePatternFor(currentLocale()), currentLocale())
     val title = state.weekIndex?.let { stringResource(R.string.schedule_week_of, it) }
         ?: stringResource(R.string.schedule_title)
 
-    Scaffold(
+    ScrollChromePage(
+        canScrollBackward = listState.canScrollBackward,
+        canScrollForward = listState.canScrollForward,
+        distanceToEndPx = rememberScrollEndDistance(listState),
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = {
                     Column {
                         Text(title)
@@ -109,8 +116,9 @@ fun WeekScheduleScreen(
         }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = padding,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {

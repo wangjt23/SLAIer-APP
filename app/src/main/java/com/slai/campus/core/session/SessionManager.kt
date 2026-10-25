@@ -54,6 +54,10 @@ class SessionManager @Inject constructor(
 
     private val probesBySystem: Map<SchoolSystem, SessionProbe> = probes.associateBy { it.system }
     private val probeMutex = Mutex()
+    private val accountMutex = Mutex()
+    private val accountVersions = MutableStateFlow<Map<SchoolSystem, Long>>(emptyMap())
+    private data class OwnerBinding(val hash: String, val from: Long, val to: Long)
+    private val ownerBindings = mutableMapOf<SchoolSystem, OwnerBinding>()
     // In-memory evidence from completed network requests, never hydrated from cached login state.
     private val authenticationEvidence = AuthenticationEvidence()
 
@@ -70,20 +74,15 @@ class SessionManager @Inject constructor(
     /** 尚未落盘的两个系统状态。key 只在"值还没写进 DataStore"期间存在。 */
     private val pending = MutableStateFlow<Map<SchoolSystem, SessionState>>(emptyMap())
 
-    /** 尚未落盘的 accountHash（null 表示"没有待写值"，也可能表示"待写的就是 null"，用单独标志区分）。 */
-    private val pendingHash = MutableStateFlow<PendingHash?>(null)
-
-    private data class PendingHash(val value: String?)
-
     val state: StateFlow<SessionSnapshot> = combine(
         store.snapshot,
-        pending,
-        pendingHash
-    ) { persisted, pendingStates, pendingAccountHash ->
+        pending
+    ) { persisted, pendingStates ->
         SessionSnapshot(
             sis = pendingStates[SchoolSystem.SIS] ?: persisted.sis,
             stu = pendingStates[SchoolSystem.STU] ?: persisted.stu,
-            accountHash = pendingAccountHash?.value ?: persisted.accountHash
+            sisAccountHash = persisted.sisAccountHash,
+            stuAccountHash = persisted.stuAccountHash
         )
     }.stateIn(scope, SharingStarted.Eagerly, SessionSnapshot())
 
@@ -95,14 +94,25 @@ class SessionManager @Inject constructor(
                 pending.update { inFlight ->
                     inFlight.filter { (system, value) -> persisted.stateOf(system) != value }
                 }
-                pendingHash.update { inFlight ->
-                    if (inFlight != null && persisted.accountHash == inFlight.value) null else inFlight
-                }
             }
         }
     }
 
-    suspend fun set(system: SchoolSystem, newState: SessionState) {
+    suspend fun set(system: SchoolSystem, newState: SessionState, expectedAccountVersion: Long? = null,
+                    expectedAuthenticationVersion: Long? = null): Boolean {
+        return if (expectedAccountVersion == null && expectedAuthenticationVersion == null) {
+            setState(system, newState)
+            true
+        } else accountMutex.withLock {
+            if ((expectedAccountVersion == null || accountVersion(system) == expectedAccountVersion) &&
+                (expectedAuthenticationVersion == null || authenticationVersion(system) == expectedAuthenticationVersion)) {
+                setState(system, newState)
+                true
+            } else false
+        }
+    }
+
+    private suspend fun setState(system: SchoolSystem, newState: SessionState) {
         val previous = stateOf(system)
         if (previous == newState) {
             if (newState == SessionState.AUTHENTICATED) recordAuthentication(system)
@@ -119,43 +129,84 @@ class SessionManager @Inject constructor(
         if (newState == SessionState.AUTHENTICATED) recordAuthentication(system)
     }
 
-    suspend fun setAccountHash(hash: String?) {
-        pendingHash.value = PendingHash(hash)
-        store.setAccountHash(hash)
+    fun accountVersion(system: SchoolSystem): Long = accountVersions.value[system] ?: 0
+
+    fun responseIsCurrent(system: SchoolSystem, accountVersion: Long, authenticationVersion: Long): Boolean =
+        this.accountVersion(system) == accountVersion && this.authenticationVersion(system) == authenticationVersion
+
+    private suspend fun writeAccountHash(system: SchoolSystem, hash: String?) {
+        store.setAccountHash(system, hash)
     }
 
-    /** The cache key for the current account; creates a device-local one when the id is unknown. */
-    suspend fun requireAccountHash(): String {
-        state.value.accountHash?.let { return it }
-        // 内存快照可能还没跟上磁盘（冷启动的头几毫秒）。必须再问一次真相源：
-        // deviceLocalHash(null) 每次都会生成一个**新的随机 key**，重复走一遍会把缓存分区换掉，
-        // 用户已经缓存的课表会看起来"凭空消失"。
-        store.current().accountHash?.let { return it }
-        val hash = AccountHasher.deviceLocalHash(store.studentIdHint())
-        setAccountHash(hash)
-        return hash
+    /** Atomically initializes an independent partition for each school system. */
+    suspend fun requireAccountHash(system: SchoolSystem): String = accountMutex.withLock {
+        store.requireAccountHash(system)
     }
 
-    /**
-     * Re-derives the cache key from a student id discovered in a response. Returns true when the
-     * key changed, which means the previous cache belongs to a different account and must not be
-     * shown.
-     */
-    suspend fun onStudentIdDiscovered(rawStudentId: String?): Boolean {
-        val id = rawStudentId?.trim()?.takeIf { it.isNotEmpty() } ?: return false
-        if (id.length < 3) return false
-        store.setStudentIdHint(id)
-        val newHash = AccountHasher.hash(id)
-        val oldHash = state.value.accountHash
-        if (oldHash == newHash) return false
-        setAccountHash(newHash)
-        AppLog.i("account changed; cache partition switched")
-        return true
+    /** Identity selection and cache writes form one operation relative to explicit account changes. */
+    suspend fun <T> withAccount(
+        system: SchoolSystem,
+        verifiedHash: String?,
+        expectedVersion: Long,
+        block: suspend (String) -> T
+    ): T? = accountMutex.withLock {
+        val currentVersion = accountVersion(system)
+        if (currentVersion != expectedVersion) {
+            // A startup probe may bind this same owner before the month response arrives.
+            // Only that exact owner-binding transition can accept a same-owner response;
+            // explicit login/logout always removes this allowance.
+            val binding = ownerBindings[system]
+            if (verifiedHash == null || binding == null || binding.hash != verifiedHash ||
+                binding.from != expectedVersion || binding.to != currentVersion) return@withLock null
+        }
+        val selected = verifiedHash ?: if (store.accountPending(system)) AccountHasher.deviceLocalHash(null)
+            else store.requireAccountHash(system)
+        val previous = store.current().accountHashOf(system)
+        if (previous != selected) {
+            val next = currentVersion + 1
+            accountVersions.update { it + (system to next) }
+            ownerBindings[system] = OwnerBinding(selected, currentVersion, next)
+        }
+        writeAccountHash(system, selected)
+        block(selected)
     }
 
-    suspend fun current(): SessionSnapshot = state.value
+    /** Validate a completed request without selecting an owner or clearing a pending login. */
+    suspend fun <T> withCurrentAccount(
+        system: SchoolSystem,
+        owner: String,
+        expectedVersion: Long,
+        expectedAuthenticationVersion: Long?,
+        block: (String, Long) -> T
+    ): T? = accountMutex.withLock {
+        val currentVersion = accountVersion(system)
+        val binding = ownerBindings[system]
+        val sameBinding = binding?.let {
+            it.hash == owner && it.from == expectedVersion && it.to == currentVersion
+        } == true
+        if ((currentVersion != expectedVersion && !sameBinding) ||
+            store.current().accountHashOf(system) != owner ||
+            (expectedAuthenticationVersion != null && authenticationVersion(system) != expectedAuthenticationVersion)) return@withLock null
+        block(owner, currentVersion)
+    }
 
-    suspend fun stateOf(system: SchoolSystem): SessionState = state.value.stateOf(system)
+    /** Keep the last cache readable on cancellation; the next authenticated response selects an owner. */
+    suspend fun beginLogin(system: SchoolSystem) = accountMutex.withLock {
+        accountVersions.update { it + (system to (accountVersion(system) + 1)) }
+        ownerBindings.remove(system)
+        store.markAccountPending(system)
+    }
+
+    suspend fun current(): SessionSnapshot {
+        val persisted = store.current()
+        return SessionSnapshot(
+            sis = pending.value[SchoolSystem.SIS] ?: persisted.sis,
+            stu = pending.value[SchoolSystem.STU] ?: persisted.stu,
+            sisAccountHash = persisted.sisAccountHash, stuAccountHash = persisted.stuAccountHash
+        )
+    }
+
+    suspend fun stateOf(system: SchoolSystem): SessionState = current().stateOf(system)
 
     /**
      * Runs the probe for one system (or both) and applies the resulting transition.
@@ -168,6 +219,7 @@ class SessionManager @Inject constructor(
     suspend fun probe(system: SchoolSystem, requireFresh: Boolean = false): SessionState = probeMutex.withLock {
         val probe = probesBySystem[system] ?: return@withLock SessionState.ERROR
         val versionBeforeProbe = authenticationVersion(system)
+        val accountBeforeProbe = accountVersion(system)
         val result = try { probe.probe() } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -182,7 +234,10 @@ class SessionManager @Inject constructor(
         }
         val effective = if (result == SessionState.ERROR && current.isDefinitive) current else result
         // Retaining an old state on transport failure is not new proof of authentication.
-        if (result != SessionState.ERROR || !current.isDefinitive) set(system, effective)
+        if (result != SessionState.ERROR || !current.isDefinitive) {
+            if (!set(system, effective, accountBeforeProbe,
+                if (result == SessionState.AUTHENTICATED) null else versionBeforeProbe)) return@withLock SessionState.ERROR
+        }
         if (requireFresh) result else effective
     }
 
@@ -193,8 +248,15 @@ class SessionManager @Inject constructor(
 
     /** The user explicitly signed out: drop cookies and mark both systems as needing a login. */
     suspend fun signOut(system: SchoolSystem, cookies: WebCookieBridge) {
-        cookies.clearHostCookies(system.host)
-        set(system, SessionState.NEEDS_LOGIN)
+        accountMutex.withLock {
+            accountVersions.update { it + (system to (accountVersion(system) + 1)) }
+            ownerBindings.remove(system)
+            store.markAccountPending(system)
+            cookies.clearHostCookiesAndAwait(system.host)
+            writeAccountHash(system, null)
+            accountVersions.update { it + (system to (accountVersion(system) + 1)) }
+            setState(system, SessionState.NEEDS_LOGIN)
+        }
     }
 
     /** Convenience for workers: never start a background sync that would immediately 401. */

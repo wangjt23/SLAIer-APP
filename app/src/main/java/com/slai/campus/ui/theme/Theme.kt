@@ -1,7 +1,7 @@
 package com.slai.campus.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -119,8 +119,14 @@ fun SlaiCampusTheme(
     CompositionLocalProvider(LocalDarkTheme provides darkTheme) {
         MaterialTheme(
             colorScheme = if (darkTheme) DarkColors else LightColors,
-            typography = SlaiTypography,
-            content = content
-        )
+            typography = SlaiTypography
+        ) {
+            // Custom page containers draw the background without a Scaffold/Surface ancestor.
+            // Establish the matching foreground once; cards and controls retain their own colors.
+            CompositionLocalProvider(
+                LocalContentColor provides MaterialTheme.colorScheme.onBackground,
+                content = content
+            )
+        }
     }
 }

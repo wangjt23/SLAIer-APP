@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.slai.campus.core.common.SchoolSystem
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -14,6 +15,36 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AutomaticLoginResultTest {
+    @Test fun `whole flow deadline cancels both session wait and login work`() = runTest {
+        var waiterCancelled = false
+        var loginCancelled = false
+        val result = awaitAutomaticLoginResult(
+            awaitFreshAuthentication = { try { awaitCancellation() } finally { waiterCancelled = true } },
+            hasFreshAuthentication = { false },
+            signIn = { try { awaitCancellation() } finally { loginCancelled = true } },
+            timeoutMs = 2_000
+        )
+        assertThat(result).isFalse()
+        assertThat(waiterCancelled).isTrue()
+        assertThat(loginCancelled).isTrue()
+        assertThat(testScheduler.currentTime).isEqualTo(2_000)
+    }
+
+    @Test fun `leaving the app cancels the whole flow rather than waiting for its deadline`() = runTest {
+        var loginCancelled = false
+        val job = async {
+            awaitAutomaticLoginResult(
+                { awaitCancellation() }, { false },
+                { try { awaitCancellation() } finally { loginCancelled = true } }
+            )
+        }
+        runCurrent()
+        job.cancelAndJoin()
+        assertThat(job.isCancelled).isTrue()
+        assertThat(loginCancelled).isTrue()
+        assertThat(testScheduler.currentTime).isEqualTo(0)
+    }
+
     @Test fun `fresh attendance success closes a stuck login and cancels its page`() = runTest {
         val evidence = AuthenticationEvidence()
         val before = evidence.version(SchoolSystem.STU)

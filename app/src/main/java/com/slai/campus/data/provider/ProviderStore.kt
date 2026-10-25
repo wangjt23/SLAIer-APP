@@ -27,9 +27,10 @@ private val Context.providerDataStore: DataStore<Preferences> by preferencesData
  * store, and so the whole list can be exported/imported by copy-paste.
  */
 @Singleton
-class ProviderStore @Inject constructor(
-    private val context: Context
+class ProviderStore internal constructor(
+    private val dataStore: DataStore<Preferences>
 ) {
+    @Inject constructor(context: Context) : this(context.providerDataStore)
 
     private val key = stringPreferencesKey("providers_json")
 
@@ -39,40 +40,41 @@ class ProviderStore @Inject constructor(
         explicitNulls = false
     }
 
-    val rawJson: Flow<String> = context.providerDataStore.data.map { it[key].orEmpty() }
+    val rawJson: Flow<String> = dataStore.data.map { it[key].orEmpty() }
 
     val providers: Flow<List<ApiProvider>> = rawJson.map { decode(it) }
 
-    suspend fun all(): List<ApiProvider> = decode(context.providerDataStore.data.first()[key].orEmpty())
+    suspend fun all(): List<ApiProvider> = decode(dataStore.data.first()[key].orEmpty())
 
     suspend fun enabledFor(system: SchoolSystem, purpose: ProviderPurpose): List<ApiProvider> =
         all().filter { it.enabled && it.system == system.key && it.purpose == purpose.key }
 
     suspend fun upsert(provider: ApiProvider) {
-        val current = all().toMutableList()
-        val index = current.indexOfFirst { it.id == provider.id }
-        if (index >= 0) current[index] = provider else current += provider
-        save(current)
+        update { providers ->
+            val current = providers.toMutableList()
+            val index = current.indexOfFirst { it.id == provider.id }
+            if (index >= 0) current[index] = provider else current += provider
+            current
+        }
     }
 
     suspend fun delete(id: String) {
-        save(all().filterNot { it.id == id })
+        update { providers -> providers.filterNot { it.id == id } }
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
-        save(all().map { if (it.id == id) it.copy(enabled = enabled) else it })
+        update { providers -> providers.map { if (it.id == id) it.copy(enabled = enabled) else it } }
     }
 
-    suspend fun replaceAll(providers: List<ApiProvider>) = save(providers)
+    suspend fun replaceAll(providers: List<ApiProvider>) = update { providers }
 
-    private suspend fun save(providers: List<ApiProvider>) {
-        val text = runCatching {
-            json.encodeToString(ListSerializer(ApiProvider.serializer()), providers)
-        }.getOrElse {
-            AppLog.w("provider encode failed: ${it.javaClass.simpleName}")
-            return
+    private suspend fun update(transform: (List<ApiProvider>) -> List<ApiProvider>) {
+        // DataStore serializes edit transactions. Reading outside this transaction loses another
+        // edit when two callers add, delete or enable different providers at the same time.
+        dataStore.edit { prefs ->
+            val providers = transform(decode(prefs[key].orEmpty()))
+            prefs[key] = json.encodeToString(ListSerializer(ApiProvider.serializer()), providers)
         }
-        context.providerDataStore.edit { it[key] = text }
     }
 
     private fun decode(text: String): List<ApiProvider> {

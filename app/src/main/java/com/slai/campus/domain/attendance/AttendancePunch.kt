@@ -208,6 +208,14 @@ object PunchPairing {
     fun of(date: LocalDate, punches: List<AttendancePunch>, now: LocalDateTime): DailyAttendance =
         daily(punches, now)[date] ?: DailyAttendance(date)
 
+    /**
+     * Physical presence is independent of the date whose attendance total is displayed.
+     * For example, returning after midnight opens a new stay even while the card shows yesterday.
+     * A cached future exit must not close a stay before that exit has actually happened.
+     */
+    fun currentlyInsideAt(punches: List<AttendancePunch>, now: LocalDateTime): Boolean =
+        daily(punches.filter { !it.time.isAfter(now) }, now).values.any { it.currentlyInsideAt(now) }
+
     /** 同秒同方向只保留一条；同秒一进一出都保留（它们是不同事件）。 */
     private fun dedupe(punches: List<AttendancePunch>): List<AttendancePunch> =
         punches.sortedBy { it.time }

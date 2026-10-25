@@ -104,9 +104,14 @@ object NotificationHelper {
             .setContentIntent(contentIntent)
             .build()
 
-        runCatching {
+        try {
             NotificationManagerCompat.from(context)
                 .notify(occurrenceId.hashCode() and 0x0FFFFFFF, notification)
-        }.onFailure { AppLog.w("notification failed: ${it.javaClass.simpleName}") }
+        } catch (_: SecurityException) {
+            // Permission can be revoked after the initial check; handle that race explicitly.
+            AppLog.w("notification skipped: permission revoked")
+        } catch (error: Exception) {
+            AppLog.w("notification failed: ${error.javaClass.simpleName}")
+        }
     }
 }

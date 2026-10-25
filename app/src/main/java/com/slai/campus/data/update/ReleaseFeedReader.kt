@@ -6,7 +6,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /** Read a feed without Android state, so HTTP cache behavior can be tested with real OkHttp. */
-internal fun readReleaseFeed(
+internal suspend fun readReleaseFeed(
     client: OkHttpClient,
     url: String,
     cached: AppRelease?,
@@ -20,17 +20,18 @@ internal fun readReleaseFeed(
             .header("User-Agent", "SLAIer-Android")
             .apply { if (attempt == 0 && !etag.isNullOrBlank()) header("If-None-Match", etag) }
             .get().build()
-        client.newCall(request).execute().use { response ->
+        val result = client.newCall(request).readUpdateResponse { response ->
             if (response.code == 304) {
-                if (cached != null) return ReleaseFetch(RemoteResult.Success(cached), etag)
-                if (attempt == 0) return@use
+                if (cached != null) return@readUpdateResponse ReleaseFetch(RemoteResult.Success(cached), etag)
+                if (attempt == 0) return@readUpdateResponse null
             }
-            if (!response.isSuccessful) return ReleaseFetch(
+            if (!response.isSuccessful) return@readUpdateResponse ReleaseFetch(
                 RemoteResult.ServerError(response.code, response.message.ifBlank { null }), etag)
-            val release = parse(response.body?.string()) ?: return ReleaseFetch(
+            val release = parse(response.body?.string()) ?: return@readUpdateResponse ReleaseFetch(
                 RemoteResult.SchemaChanged("更新清单结构不认识"), etag)
-            return ReleaseFetch(RemoteResult.Success(release), response.header("ETag"))
+            ReleaseFetch(RemoteResult.Success(release), response.header("ETag"))
         }
+        if (result != null) return result
     }
     return ReleaseFetch(RemoteResult.SchemaChanged("更新清单缓存不可用"), null)
 }

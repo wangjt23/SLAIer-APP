@@ -1,7 +1,7 @@
 package com.slai.campus.domain.attendance
 
-import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 
 /**
@@ -64,16 +64,64 @@ data class AttendanceRecord(
         }
 
     /** Leave days use physical stays only; other historical totals retain the school's priority. */
-    fun displayMinutes(punchDay: DailyAttendance?, now: java.time.LocalDateTime): Int? {
+    fun displayMinutes(punchDay: DailyAttendance?, now: LocalDateTime): Int? {
         if (leave == true) {
             return punchDay?.takeIf { day ->
                 day.sessions.any { it.to != null || it.isStillOpenAt(now) }
             }?.minutesAt(now)
         }
         val reported = reportedMinutes
-        if (date.isBefore(now.toLocalDate()) && reported != null) return reported
+        if (date.isBefore(attendanceDate(now)) && reported != null) return reported
         if (punchDay != null && punchDay.punches.isNotEmpty()) return punchDay.minutesAt(now)
-        return checkedInMinutes(if (date == now.toLocalDate()) now.toLocalTime() else null) ?: reported
+        return checkedInMinutesAt(now) ?: reported
+    }
+
+    /**
+     * Fallback for summaries that supply ordered clock times without full gate timestamps.
+     * Use the record's date so a 23:00 entry still accrues time after midnight, and apply the
+     * same next-day 05:00 expiry as raw [PunchSession] data. Sum seconds before rounding.
+     */
+    fun checkedInMinutesAt(now: LocalDateTime): Int? =
+        summarySessions()?.let { sessions ->
+            // New calendar-date entries affect physical presence, but not this date's total.
+            (sessions.filter { it.from.toLocalDate() == date }.sumOf { it.secondsAt(now) } / 60).toInt()
+        }
+            ?: reportedMinutes
+
+    /** A summary-only entry is on site only until its next-day expiry. */
+    fun isCurrentlyInsideAt(now: LocalDateTime): Boolean =
+        summarySessions()?.lastOrNull()?.isStillOpenAt(now) == true
+
+    /**
+     * A smaller clock value may mean one midnight crossing, never another whole day.
+     * The inferred next-day times must stay within the overnight cutoff. If the order is
+     * inconsistent, retain completed pairs but discard that pair and the ambiguous remainder.
+     */
+    private fun summarySessions(): List<PunchSession>? {
+        val times = swipes.takeIf { it.isNotEmpty() }
+            ?: firstSwipe?.let { listOfNotNull(it, lastSwipe) }
+            ?: return null
+        val sessions = mutableListOf<PunchSession>()
+        var previous: LocalDateTime? = null
+        var currentDate = date
+        var open: LocalDateTime? = null
+        times.forEach { time ->
+            var at = currentDate.atTime(time)
+            if (previous?.let(at::isBefore) == true) {
+                if (currentDate != date || time.isAfter(PunchSession.OPEN_CUTOFF)) return sessions
+                currentDate = date.plusDays(1)
+                at = currentDate.atTime(time)
+            }
+            if (currentDate != date && time.isAfter(PunchSession.OPEN_CUTOFF)) return sessions
+            val start = open
+            if (start == null) open = at else {
+                sessions += PunchSession(start, at)
+                open = null
+            }
+            previous = at
+        }
+        open?.let { sessions += PunchSession(it) }
+        return sessions
     }
 
     /**
@@ -84,6 +132,7 @@ data class AttendanceRecord(
      * open segment is counted up to [now] so the number grows while they are in the building.
      *
      * Falls back to the server's own `duration` field when the swipe list is unavailable.
+     * Clock-only compatibility API; callers with a date must use [checkedInMinutesAt].
      */
     fun checkedInMinutes(now: java.time.LocalTime? = null): Int? {
         if (swipes.size >= 2) {
@@ -234,87 +283,12 @@ data class AttendanceMonth(
     val weeks: List<AttendanceWeek> = emptyList(),
     /** Server-provided summary counters, keyed by their original field name. */
     val stats: Map<String, String> = emptyMap(),
-    val summary: AttendanceStats = AttendanceStats()
+    val summary: AttendanceStats = AttendanceStats(),
+    /** Owner proved by the protected response; only a hash leaves the parser. */
+    val accountHash: String? = null
 ) {
     val records: List<AttendanceRecord> get() = weeks.flatMap { it.records }
 
     fun recordFor(date: LocalDate): AttendanceRecord? = records.firstOrNull { it.date == date }
 
-    val lastDate: LocalDate? get() = records.maxOfOrNull { it.date }
 }
-
-/** How the attendance data was obtained on this device. */
-data class AttendanceSyncState(
-    val lastSuccessAt: java.time.Instant? = null,
-    val lastAttemptAt: java.time.Instant? = null,
-    val lastError: String? = null,
-    val monthsCached: List<String> = emptyList()
-)
-
-interface AttendanceRepository {
-
-    /** Cached attendance for [date] (today by default). Reads Room only. */
-    fun observeDay(date: LocalDate): Flow<AttendanceRecord?>
-
-    /** Cached attendance for a whole month, ordered by date. Reads Room only. */
-    fun observeMonth(month: String): Flow<AttendanceMonth>
-
-    fun observeSyncState(): Flow<AttendanceSyncState>
-
-    /** Fetches (or refreshes) one month from the school. */
-    suspend fun refresh(month: String): AttendanceRefreshResult
-
-    /** The month currently held in cache, if any. */
-    suspend fun cachedMonths(): List<String>
-
-    /** 某一天的闸机流水（本地缓存）。用于自己计算当天累计时长。 */
-    fun observePunches(date: LocalDate): Flow<List<AttendancePunch>>
-
-    /**
-     * 一个日期区间的闸机流水。
-     *
-     * 月度明细里会混进上个月最后几天的课（学校按教学周分组），而且学校月度接口
-     * **从不返回** `firstSwipe`/`lastSwipe`，所以每天的进出时间只能来自这里 ——
-     * 只查"今天"是不够的。
-     */
-    fun observePunches(from: LocalDate, to: LocalDate): Flow<List<AttendancePunch>>
-
-    /** 拉取 [from]..[to] 的闸机流水。 */
-    suspend fun refreshPunches(from: LocalDate, to: LocalDate): AttendanceRefreshResult
-
-    /** 最近一次流水同步的错误信息（用于界面提示）。 */
-    fun observePunchSyncState(): Flow<AttendanceSyncState>
-}
-
-sealed interface AttendanceRefreshResult {
-    data class Success(val month: String, val days: Int) : AttendanceRefreshResult
-    data object SessionExpired : AttendanceRefreshResult
-    data class Offline(val cached: Boolean) : AttendanceRefreshResult
-
-    /**
-     * 有网，但**连不上学校主机**（DNS / 连接超时 / TLS 失败）。
-     *
-     * 和 [Offline] 分开是有原因的：学生考勤系统在校园网外常常连不上，用户"刷脸出闸 → 走出校园"
-     * 之后就会一直是这个状态 —— 此时界面不能只说"离线"，而要提示回到校园网再刷新，
-     * 否则用户会以为"我明明出闸了，为什么还在馆里计时"。
-     */
-    data class Unreachable(val reason: String) : AttendanceRefreshResult
-    data class SchemaChanged(val reason: String) : AttendanceRefreshResult
-    data class ServerError(val code: Int) : AttendanceRefreshResult
-    data class Failed(val reason: String) : AttendanceRefreshResult
-
-    val isSuccess: Boolean get() = this is Success
-
-    /** 数据可能已经过期：连不上学校，界面要给出"回校园网再刷"的提示。 */
-    val needsCampusNetworkHint: Boolean get() = this is Unreachable
-}
-
-/**
- * 把"网络层失败"翻译成给用户看的结果。
- *
- * 设备有网却连不上学校主机，和"设备压根没网"是两件事：前者多半是人已经离开校园网
- * （学生系统在校外常常不可达），提示应该是"回校园网再刷新"，而不是"你现在离线"。
- * 抽成纯函数便于单测。
- */
-fun networkFailureResult(hasNetwork: Boolean, hasCache: Boolean, reason: String): AttendanceRefreshResult =
-    if (hasNetwork) AttendanceRefreshResult.Unreachable(reason) else AttendanceRefreshResult.Offline(hasCache)

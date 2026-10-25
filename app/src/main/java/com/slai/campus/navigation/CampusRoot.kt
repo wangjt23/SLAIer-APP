@@ -2,18 +2,26 @@ package com.slai.campus.navigation
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import com.slai.campus.ui.components.AutomaticLoginNotice
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -22,7 +30,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -36,6 +47,11 @@ import com.slai.campus.feature.home.HomeScreen
 import com.slai.campus.feature.provider.ProviderScreen
 import com.slai.campus.feature.schedule.WeekScheduleScreen
 import com.slai.campus.feature.settings.SettingsScreen
+import com.slai.campus.ui.components.LocalScrollChromeEnabled
+import com.slai.campus.ui.components.LocalScrollChromeMotion
+import com.slai.campus.ui.components.rememberScrollChromeMotionState
+import com.slai.campus.ui.components.ScrollingNavigationBar
+import com.slai.campus.ui.components.rememberTouchExplorationEnabled
 
 /**
  * The whole navigation surface.
@@ -44,6 +60,7 @@ import com.slai.campus.feature.settings.SettingsScreen
  * library: the app has no deep links, no argument passing beyond a URL, and back behaviour is exactly
  * "close the overlay, otherwise leave the tab", which is easier to get right by hand than with a graph.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
     var selectedTab by rememberSaveable { mutableStateOf(Tab.HOME) }
@@ -52,6 +69,13 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
      * "tab 还在、浮层没了"的半状态。恢复策略（哪些该恢复、哪些刻意不恢复）在 OverlayPersistence。
      */
     var overlay by rememberSaveable(stateSaver = OverlaySaver) { mutableStateOf<Overlay?>(null) }
+    val touchExplorationEnabled = rememberTouchExplorationEnabled()
+    // Short destinations keep navigation immediately available; their content can still scroll.
+    val chromeScrollEnabled = selectedTab.hidesChromeOnScroll && overlay == null && !touchExplorationEnabled
+    val chromeMotion = key(selectedTab) { rememberScrollChromeMotionState() }
+    LaunchedEffect(chromeMotion, overlay, touchExplorationEnabled) {
+        if (!chromeScrollEnabled) chromeMotion.reset()
+    }
 
     val session by viewModel.session.collectAsStateWithLifecycle()
     val savedLogin by viewModel.savedLogin.collectAsStateWithLifecycle()
@@ -74,6 +98,12 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
     LaunchedEffect(session.stu, savedLogin, overlay, resumed) {
         viewModel.updateAutomaticLogin(foregroundAvailable = resumed && overlay == null)
     }
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == Tab.ATTENDANCE) viewModel.requestAttendanceRecovery()
+    }
+    LaunchedEffect(overlay) {
+        viewModel.updateWebLoginFlow((overlay as? Overlay.Web)?.takeIf { it.isLoginFlow }?.flowId)
+    }
 
     /*
      * 登录确认成功之后，WebView 自己退场。
@@ -83,13 +113,8 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
      * 他正站在自己想看的页面上。
      */
     LaunchedEffect(Unit) {
-        viewModel.loginCompleted.collect {
-            if ((overlay as? Overlay.Web)?.closeOnLogin != true) return@collect
-            // 让"登录成功"那一帧在屏幕上停一下再退场：页面瞬间消失会像闪退。
-            kotlinx.coroutines.delay(LOGIN_AUTO_CLOSE_DELAY_MS)
-            // 这期间用户可能自己关了、或者换了别的页面，那就不必再关一次。
-            if ((overlay as? Overlay.Web)?.closeOnLogin != true) return@collect
-            overlay = null
+        viewModel.loginCompleted.collect { flowId ->
+            if (!closeCompletedLoginOverlay(flowId, { overlay }, { overlay = null })) return@collect
             // 页面凭空消失如果不给一句解释，会像是崩了。首页那条"正在同步"要滚到下面才看得见，
             // 而从设置页/课表页登录时根本不在首页。
             Toast.makeText(context, R.string.home_login_syncing, Toast.LENGTH_SHORT).show()
@@ -101,7 +126,9 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
             openTab = { selectedTab = it },
             openWeb = { url, title, system, isLoginFlow ->
                 viewModel.stopAutomaticLogin()
-                overlay = Overlay.Web(url, title, system, isLoginFlow, captureEnabled = false)
+                val page = Overlay.Web(url, title, system, isLoginFlow, captureEnabled = false)
+                if (isLoginFlow) viewModel.beginManualLogin(system, page.flowId)
+                overlay = page
             },
             openCapture = { url, title, system ->
                 overlay = Overlay.Web(url, title, system, isLoginFlow = false, captureEnabled = true)
@@ -114,18 +141,24 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
 
     BackHandler(enabled = overlay != null) { overlay = null }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Scaffold(
-            snackbarHost = { AutomaticLoginNotice(automaticLoginState) },
-            containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
-                /*
-                 * 默认的 Material 3 导航栏用 `secondaryContainer` 当选中指示器；这里显式指定，
-                 * 让选中项落在品牌主色系上，而不是系统取色出来的浅蓝。
-                 */
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    contentColor = MaterialTheme.colorScheme.onSurface
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        CompositionLocalProvider(
+            LocalScrollChromeEnabled provides chromeScrollEnabled,
+            LocalScrollChromeMotion provides chromeMotion
+        ) {
+            // System areas stay fixed. The lists fill this viewport while controls translate over
+            // them; hiding navigation never changes the content constraints or reserves a blank row.
+            Box(Modifier.fillMaxSize()
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout)).clipToBounds()) {
+                when (selectedTab) {
+                    Tab.HOME -> HomeScreen(navigator = navigator)
+                    Tab.SCHEDULE -> WeekScheduleScreen(navigator = navigator)
+                    Tab.ATTENDANCE -> AttendanceScreen(navigator = navigator)
+                    Tab.SETTINGS -> SettingsScreen(navigator = navigator, session = session)
+                }
+                ScrollingNavigationBar(
+                    state = chromeMotion,
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
                     Tab.entries.forEach { tab ->
                         NavigationBarItem(
@@ -143,32 +176,32 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
                         )
                     }
                 }
-            }
-        ) { padding ->
-            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-                when (selectedTab) {
-                    Tab.HOME -> HomeScreen(
-                        navigator = navigator
-                    )
-                    Tab.SCHEDULE -> WeekScheduleScreen(navigator = navigator)
-                    Tab.ATTENDANCE -> AttendanceScreen(navigator = navigator)
-                    Tab.SETTINGS -> SettingsScreen(navigator = navigator, session = session)
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().graphicsLayer {
+                    translationY = -chromeMotion.bottomBarHeightPx * (1f - chromeMotion.hiddenFraction)
+                }) {
+                    AutomaticLoginNotice(automaticLoginState)
                 }
             }
+            // The Android gesture/three-button area is a system inset, separate from app controls.
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                .background(MaterialTheme.colorScheme.surfaceContainer))
         }
 
         when (val current = overlay) {
             null -> Unit
 
             /*
-             * key(url)：WebView 的 loadUrl 只在 factory 里跑一次，换 URL 而不换实例的话新地址根本不会
-             * 加载 —— 下面那条「死胡同 → SSO 入口」的兜底正是靠换 overlay 实现的，所以这里必须让
-             * 新地址拿到一个新的 WebView（旧实例在 onDispose 里销毁，Cookie 在 CookieManager 里，不受影响）。
+             * 每次打开页面都有独立 flowId：即使重新打开同一 URL，也需要新的 WebView 和登录确认。
+             * 旧实例在 onDispose 中销毁，Cookie 保存在 CookieManager 中。
              */
-            is Overlay.Web -> key(current.url) {
+            is Overlay.Web -> key(current.flowId) {
                 SchoolWebScreen(
                     initialUrl = current.url,
                     title = current.title,
+                    beginCookieNavigation = { onInvalidated ->
+                        viewModel.beginSchoolCookieNavigation(current.system, onInvalidated)
+                    },
                     onClose = { overlay = null },
                     captureEnabled = current.captureEnabled,
                     // 登录页上先讲清楚"成功就会自动回去"，别等用户输完密码再提示关闭。
@@ -178,7 +211,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
                         overlay = Overlay.Providers
                     },
                     onPageFinished = { url ->
-                        viewModel.onWebPageFinished(url, current.isLoginFlow)
+                        viewModel.onWebPageFinished(url, current.isLoginFlow, current.flowId)
                         /*
                          * 未登录时打开任何业务页面（“打开教务系统”、课表网页兜底……），学校会 302 到正方
                          * 自带的 `/yjsxt/xtgl/login_slogin.html`：一个学生没有密码、也没有任何通往统一
@@ -194,7 +227,7 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
                             else -> sisEndpoints.ssoFallbackFor(url)
                         }
                         if (rescued != null) {
-                            overlay = Overlay.Web(
+                            val page = Overlay.Web(
                                 url = rescued,
                                 title = sisLoginLabel,
                                 system = SchoolSystem.SIS,
@@ -202,6 +235,8 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
                                 // 用户本来是想看网页的，登录只是路过 —— 成功了也别把他踢回 App。
                                 closeOnLogin = false
                             )
+                            viewModel.beginManualLogin(SchoolSystem.SIS, page.flowId)
+                            overlay = page
                         }
                     }
                 )
@@ -221,9 +256,6 @@ fun CampusRoot(viewModel: MainViewModel = hiltViewModel()) {
         }
     }
 }
-
-/** 登录成功后让 WebView 多停一会儿再退场，给用户看清"确实登录上了"。 */
-private const val LOGIN_AUTO_CLOSE_DELAY_MS = 600L
 
 /** 把 [OverlayPersistence] 的纯编解码接到 Compose 的保存/恢复机制上。 */
 private val OverlaySaver = Saver<Overlay?, List<String>>(

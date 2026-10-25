@@ -92,4 +92,13 @@ class OverlayPersistenceTest {
         ) as Overlay.Web
         assertThat(unknownSystem.system).isNull()
     }
+
+    @Test fun `legacy browsing saves get an independent page identity`() {
+        val old = listOf("web", "https://stu.slai.edu.cn/a/index", "学生系统", "STU")
+        val first = OverlayPersistence.decode(old) as Overlay.Web
+        val second = OverlayPersistence.decode(old) as Overlay.Web
+        assertThat(first.flowId).isNotEmpty()
+        assertThat(first.flowId).isNotEqualTo(second.flowId)
+        assertThat(OverlayPersistence.decode(OverlayPersistence.encode(first))).isEqualTo(first)
+    }
 }

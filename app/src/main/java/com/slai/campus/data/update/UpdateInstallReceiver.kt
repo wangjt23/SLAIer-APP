@@ -25,13 +25,15 @@ sealed interface InstallEvent {
  * EntryPointAccessors 要么引入额外样板，而这里需要的只是一个进程内的事件口。
  */
 object UpdateEvents {
-    private val _events = MutableSharedFlow<InstallEvent>(extraBufferCapacity = 4)
-    val events: SharedFlow<InstallEvent> = _events.asSharedFlow()
+    private val _events = MutableSharedFlow<InstallResult>(extraBufferCapacity = 4)
+    val events: SharedFlow<InstallResult> = _events.asSharedFlow()
 
-    fun publish(event: InstallEvent) {
-        _events.tryEmit(event)
+    fun publish(sessionId: Int, event: InstallEvent) {
+        _events.tryEmit(InstallResult(sessionId, event))
     }
 }
+
+data class InstallResult(val sessionId: Int, val event: InstallEvent)
 
 /**
  * 接收 `PackageInstaller` 的状态回调。
@@ -42,6 +44,8 @@ object UpdateEvents {
 class UpdateInstallReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != ACTION_INSTALL_STATUS) return
+        val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
         AppLog.i("install status=$status")
@@ -50,19 +54,19 @@ class UpdateInstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm = confirmIntent(intent)
                 if (confirm == null) {
-                    UpdateEvents.publish(InstallEvent.Failed("系统没有给出安装确认界面"))
+                    UpdateEvents.publish(sessionId, InstallEvent.Failed("系统没有给出安装确认界面"))
                 } else {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     runCatching { context.startActivity(confirm) }
-                        .onFailure { UpdateEvents.publish(InstallEvent.Failed(it.javaClass.simpleName)) }
+                        .onFailure { UpdateEvents.publish(sessionId, InstallEvent.Failed(it.javaClass.simpleName)) }
                 }
             }
 
-            PackageInstaller.STATUS_SUCCESS -> UpdateEvents.publish(InstallEvent.Success)
+            PackageInstaller.STATUS_SUCCESS -> UpdateEvents.publish(sessionId, InstallEvent.Success)
 
-            PackageInstaller.STATUS_FAILURE_ABORTED -> UpdateEvents.publish(InstallEvent.Cancelled)
+            PackageInstaller.STATUS_FAILURE_ABORTED -> UpdateEvents.publish(sessionId, InstallEvent.Cancelled)
 
-            else -> UpdateEvents.publish(InstallEvent.Failed(message ?: "status=$status"))
+            else -> UpdateEvents.publish(sessionId, InstallEvent.Failed(message ?: "status=$status"))
         }
     }
 
@@ -76,7 +80,6 @@ class UpdateInstallReceiver : BroadcastReceiver() {
 
     companion object {
         const val ACTION_INSTALL_STATUS = "com.slai.campus.action.INSTALL_STATUS"
-        private const val REQUEST_CODE = 4711
 
         /**
          * `PackageInstaller.commit()` 要的 IntentSender。
@@ -84,10 +87,11 @@ class UpdateInstallReceiver : BroadcastReceiver() {
          * `FLAG_MUTABLE` 是必须的（API 31+）：系统要往这个 Intent 里回填 status extras，
          * 不可变的 PendingIntent 会直接抛异常。该常量在旧系统上被忽略，所以 minSdk 26 也安全。
          */
-        fun statusIntent(context: Context) = PendingIntent.getBroadcast(
+        fun statusIntent(context: Context, sessionId: Int) = PendingIntent.getBroadcast(
             context,
-            REQUEST_CODE,
-            Intent(context, UpdateInstallReceiver::class.java).setAction(ACTION_INSTALL_STATUS),
+            sessionId,
+            Intent(context, UpdateInstallReceiver::class.java).setAction(ACTION_INSTALL_STATUS)
+                .putExtra(PackageInstaller.EXTRA_SESSION_ID, sessionId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         ).intentSender
     }

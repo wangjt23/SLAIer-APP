@@ -37,10 +37,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +71,7 @@ import com.slai.campus.core.common.AppLog
 fun SchoolWebScreen(
     initialUrl: String,
     title: String,
+    beginCookieNavigation: (onInvalidated: () -> Unit) -> AutoCloseable,
     onClose: () -> Unit,
     onPageFinished: (url: String) -> Unit = {},
     onUrlChanged: (url: String) -> Unit = {},
@@ -87,6 +90,24 @@ fun SchoolWebScreen(
 ) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
+    val close by rememberUpdatedState(onClose)
+    val revoked = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    fun destroyWebView() {
+        val view = webView ?: return
+        webView = null
+        runCatching { view.stopLoading() }
+        runCatching { view.webViewClient = WebViewClient() }
+        runCatching { view.destroy() }
+    }
+    val cookieNavigation = remember {
+        CookieNavigationLease {
+            beginCookieNavigation {
+                revoked.set(true)
+                destroyWebView()
+                close()
+            }
+        }
+    }
     var progress by remember { mutableIntStateOf(0) }
     var currentUrl by remember { mutableStateOf(initialUrl) }
     var sslError by remember { mutableStateOf<String?>(null) }
@@ -124,15 +145,9 @@ fun SchoolWebScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webView?.let { view ->
-                runCatching {
-                    view.stopLoading()
-                    view.loadUrl("about:blank")
-                    view.destroy()
-                }
-                AppLog.d("webview destroyed")
-            }
-            webView = null
+            revoked.set(true)
+            destroyWebView()
+            cookieNavigation.close()
         }
     }
 
@@ -225,6 +240,7 @@ fun SchoolWebScreen(
                             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                             webChromeClient = object : WebChromeClient() {
                                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    if (revoked.get()) return
                                     progress = newProgress
                                 }
                             }
@@ -234,6 +250,7 @@ fun SchoolWebScreen(
                                     url: String?,
                                     favicon: Bitmap?
                                 ) {
+                                    if (revoked.get()) { view?.stopLoading(); return }
                                     sslError = null
                                     progress = 1
                                     if (captureEnabled) {
@@ -242,6 +259,7 @@ fun SchoolWebScreen(
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
+                                    if (revoked.get()) return
                                     progress = 100
                                     if (captureEnabled) {
                                         view?.evaluateJavascript(CaptureScript.INSTALL, null)
@@ -259,6 +277,7 @@ fun SchoolWebScreen(
                                     view: WebView?,
                                     request: WebResourceRequest?
                                 ): Boolean {
+                                    if (revoked.get()) return true
                                     val target = request?.url?.toString() ?: return false
                                     return handleNavigation(context, target)
                                 }
@@ -267,6 +286,8 @@ fun SchoolWebScreen(
                                     view: WebView?,
                                     request: WebResourceRequest?
                                 ): android.webkit.WebResourceResponse? {
+                                    if (revoked.get()) return android.webkit.WebResourceResponse("text/plain", "UTF-8",
+                                        java.io.ByteArrayInputStream(byteArrayOf()))
                                     if (captureEnabled && request != null) {
                                         val url = request.url?.toString().orEmpty()
                                         if (url.startsWith("https://")) {
@@ -290,6 +311,7 @@ fun SchoolWebScreen(
 
                                 @Deprecated("Deprecated in Java")
                                 override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                    if (revoked.get()) return true
                                     val target = url ?: return false
                                     return handleNavigation(context, target)
                                 }
@@ -317,12 +339,12 @@ fun SchoolWebScreen(
                                     }
                                 }
                             }
-                            loadUrl(initialUrl)
+                            if (!revoked.get()) loadUrl(initialUrl)
                             webView = this
                         }
                     },
                     update = { view ->
-                        webView = view
+                        if (!revoked.get()) webView = view
                     }
                 )
             }
@@ -354,6 +376,21 @@ fun SchoolWebScreen(
                 }
             }
         }
+    }
+}
+
+/** A composition that is abandoned never installs DisposableEffect, so it needs its own cleanup. */
+internal class CookieNavigationLease(begin: () -> AutoCloseable) : RememberObserver, AutoCloseable {
+    private val navigation = begin()
+    private var closed = false
+
+    override fun onRemembered() = Unit
+    override fun onForgotten() = close()
+    override fun onAbandoned() = close()
+    override fun close() {
+        if (closed) return
+        closed = true
+        navigation.close()
     }
 }
 

@@ -3,14 +3,14 @@ package com.slai.campus.feature.home
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.AssistChip
@@ -18,13 +18,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,8 +45,11 @@ import com.slai.campus.ui.datePatternFor
 import com.slai.campus.domain.schedule.ScheduleSource
 import com.slai.campus.navigation.AppNavigator
 import com.slai.campus.navigation.Tab
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.util.Locale
+import com.slai.campus.ui.components.ScrollChromePage
+import com.slai.campus.ui.components.ScrollChromeRefreshBox
+import com.slai.campus.ui.components.rememberScrollEndDistance
 
 /**
  * Home screen.
@@ -67,13 +68,19 @@ fun HomeScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val attendanceRefreshing by viewModel.attendanceRefreshing.collectAsStateWithLifecycle()
     val attendanceResult by viewModel.attendanceResult.collectAsStateWithLifecycle()
-    val today = java.time.LocalDate.now()
+    val listState = rememberLazyListState()
+    val today = state.nowDateTime.toLocalDate()
+    val overnightAttendance = state.attendanceDate.isBefore(today)
     // 日期格式与语言一致：中文 "9月10日 星期四"，英文 "Thursday, Sep 10"。
     val dateFormatter = DateTimeFormatter.ofPattern(datePatternFor(currentLocale()), currentLocale())
 
-    Scaffold(
+    ScrollChromePage(
+        canScrollBackward = listState.canScrollBackward,
+        canScrollForward = listState.canScrollForward,
+        distanceToEndPx = rememberScrollEndDistance(listState),
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
@@ -91,15 +98,17 @@ fun HomeScreen(
             )
         }
     ) { padding ->
-        PullToRefreshBox(
+        ScrollChromeRefreshBox(
             isRefreshing = attendanceRefreshing,
             onRefresh = viewModel::refreshAttendance,
-            modifier = Modifier.fillMaxSize().padding(padding)
+            topPadding = padding.calculateTopPadding() - 16.dp,
+            modifier = Modifier.fillMaxSize()
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                contentPadding = padding,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item {
@@ -124,7 +133,12 @@ fun HomeScreen(
                     item { HorizontalDivider() }
                 }
 
-                item { SectionHeader(stringResource(R.string.home_attendance_title)) }
+                item {
+                    SectionHeader(stringResource(
+                        if (overnightAttendance) R.string.attendance_overnight_title
+                        else R.string.home_attendance_title
+                    ))
+                }
 
                 item {
                     AttendanceCard(
@@ -132,6 +146,8 @@ fun HomeScreen(
                         minutes = state.attendanceMinutes,
                         inside = state.attendanceInside,
                         goalMinutes = state.attendanceGoalMinutes,
+                        attendanceDate = state.attendanceDate,
+                        today = today,
                         refreshing = attendanceRefreshing,
                         onRefresh = viewModel::refreshAttendance,
                         onOpenWeb = {
@@ -177,7 +193,6 @@ fun HomeScreen(
                     }
                 }
 
-                item { Spacer(modifier = Modifier.height(24.dp)) }
             }
         }
     }
@@ -228,7 +243,7 @@ private fun ClassCard(occurrence: ClassOccurrence) {
                     Text(
                         text = sourceLabel(occurrence.source),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -270,7 +285,7 @@ private fun EmptyTodayCard(isFirstRun: Boolean, onOpenSchedule: () -> Unit) {
 /**
  * Home attendance card.
  *
- * The number that matters is the accumulated check-in time for today against the college's daily
+ * The number that matters is the accumulated time for the attendance date against the college's daily
  * target, not "did I swipe in once" — a student may enter and leave several times.
  */
 @Composable
@@ -279,6 +294,8 @@ private fun AttendanceCard(
     minutes: Int?,
     inside: Boolean,
     goalMinutes: Int,
+    attendanceDate: LocalDate,
+    today: LocalDate,
     refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpenWeb: () -> Unit,
@@ -287,6 +304,8 @@ private fun AttendanceCard(
     val progress = minutes?.let { (it.toFloat() / goalMinutes).coerceIn(0f, 1f) } ?: 0f
     val reached = (minutes ?: 0) >= goalMinutes
     val remaining = minutes?.let { (goalMinutes - it).coerceAtLeast(0) }
+    val overnight = attendanceDate.isBefore(today)
+    val dateFormatter = DateTimeFormatter.ofPattern(datePatternFor(currentLocale()), currentLocale())
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -304,12 +323,26 @@ private fun AttendanceCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(stringResource(R.string.home_attendance_today), style = MaterialTheme.typography.labelMedium,
+                Text(
+                    text = if (overnight) {
+                        stringResource(R.string.attendance_day_heading, attendanceDate.format(dateFormatter))
+                    } else {
+                        stringResource(R.string.home_attendance_today)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (inside) {
                     Text(stringResource(R.string.attendance_inside), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary)
                 }
+            }
+
+            if (overnight) {
+                Text(
+                    text = stringResource(R.string.attendance_overnight_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

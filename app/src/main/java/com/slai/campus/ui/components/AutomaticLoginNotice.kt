@@ -66,14 +66,15 @@ fun AutomaticLoginNotice(state: AutomaticLoginState) {
         }
     }
 
-    Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         AnimatedVisibility(
             visible = visible,
             enter = fadeIn(tween(160)) + slideInVertically(tween(160)) { it / 4 },
             exit = fadeOut(tween(140)) + slideOutVertically(tween(140)) { it / 6 }
         ) {
-            AutomaticLoginNoticeContent(displayedState)
+            Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                AutomaticLoginNoticeContent(displayedState)
+            }
         }
     }
 }
@@ -82,11 +83,19 @@ fun AutomaticLoginNotice(state: AutomaticLoginState) {
 internal fun AutomaticLoginNoticeContent(state: AutomaticLoginState) {
     if (state == AutomaticLoginState.IDLE) return
     val colors = MaterialTheme.colorScheme
-    val accent = if (state == AutomaticLoginState.FAILED) colors.error else colors.primary
+    val accent = when (state) {
+        AutomaticLoginState.FAILED -> colors.error
+        AutomaticLoginState.COOLDOWN -> colors.secondary
+        AutomaticLoginState.NETWORK_UNAVAILABLE -> colors.tertiary
+        else -> colors.primary
+    }
     val message = when (state) {
         AutomaticLoginState.RUNNING -> R.string.automatic_login_running
         AutomaticLoginState.SUCCEEDED -> R.string.automatic_login_succeeded
-        else -> R.string.automatic_login_failed
+        AutomaticLoginState.FAILED -> R.string.automatic_login_failed
+        AutomaticLoginState.COOLDOWN -> R.string.automatic_login_cooldown
+        AutomaticLoginState.NETWORK_UNAVAILABLE -> R.string.automatic_login_network_unavailable
+        AutomaticLoginState.IDLE -> return
     }
     Surface(
         modifier = Modifier.widthIn(max = 360.dp).animateContentSize(tween(180))

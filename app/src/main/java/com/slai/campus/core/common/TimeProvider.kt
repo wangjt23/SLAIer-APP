@@ -4,6 +4,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
@@ -33,11 +34,14 @@ class TimeProvider @Inject constructor(
 
     fun epochMillis(): Long = clock.millis()
 
-    /** Emits on collection and when the local date changes; does not access the network. */
-    fun observeDate(): Flow<LocalDate> = flow {
+    /** Local clock ticks also drive attendance boundaries that occur after midnight. */
+    fun observeDateTime(): Flow<LocalDateTime> = flow {
         while (true) {
-            emit(today())
+            emit(nowDateTime())
             delay(30_000)
         }
-    }.distinctUntilChanged()
+    }
+
+    /** Emits on collection and when the calendar date changes; does not access the network. */
+    fun observeDate(): Flow<LocalDate> = observeDateTime().map { it.toLocalDate() }.distinctUntilChanged()
 }

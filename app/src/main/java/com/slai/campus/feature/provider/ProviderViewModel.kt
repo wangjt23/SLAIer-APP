@@ -22,6 +22,7 @@ import com.slai.campus.domain.provider.ProviderPurpose
 import com.slai.campus.domain.schedule.RefreshReason
 import com.slai.campus.domain.schedule.ScheduleRepository
 import com.slai.campus.domain.schedule.ScheduleSource
+import com.slai.campus.domain.schedule.Semester
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import java.time.LocalTime
 import javax.inject.Inject
 import android.content.Context
 
@@ -188,6 +193,7 @@ class ProviderViewModel @Inject constructor(
             try {
                 append("=== 测试 ${provider.name} ===")
                 val semester = resolveSemester()
+                val periodTimes = previewPeriodTimes(semester)
                 val response = providerExecutor.execute(provider, semester)
                 append(response.render().trim())
                 if (!response.isSuccess) {
@@ -200,7 +206,8 @@ class ProviderViewModel @Inject constructor(
                         provider = provider,
                         semester = semester,
                         accountHash = "test",
-                        source = ScheduleSource.SIS_PROVIDER
+                        source = ScheduleSource.SIS_PROVIDER,
+                        periodTimes = periodTimes
                     )
                 ) {
                     is com.slai.campus.core.common.RemoteResult.Success -> {
@@ -229,13 +236,15 @@ class ProviderViewModel @Inject constructor(
                     return@launch
                 }
                 val semester = resolveSemester()
+                val periodTimes = previewPeriodTimes(semester)
                 list.forEach { provider ->
                     append("--- ${provider.name}")
                     val response = providerExecutor.execute(provider, semester)
                     append("    ${response.status ?: "-"} ${response.durationMs}ms ${response.contentType ?: ""}")
                     if (response.isSuccess) {
                         val parsed = GenericTimetableParser.parse(
-                            response.body, provider, semester, "test", ScheduleSource.SIS_PROVIDER
+                            response.body, provider, semester, "test", ScheduleSource.SIS_PROVIDER,
+                            periodTimes
                         )
                         append(
                             when (parsed) {
@@ -468,7 +477,26 @@ class ProviderViewModel @Inject constructor(
         )
     }
 
-    private suspend fun resolveSemester(): com.slai.campus.domain.schedule.Semester {
+    /** One bounded fetch per preview run; all enabled providers use the same school clock. */
+    private suspend fun previewPeriodTimes(semester: Semester): List<Pair<LocalTime, LocalTime>> {
+        val baseUrl = SisConfig.baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.SIS))
+        val owner = currentCoroutineContext()[Job]
+        val times = try {
+            sisRemote.fetchPeriodTimes(
+                baseUrl, semester.academicYear.orEmpty(), semester.termCode.orEmpty(),
+                deadlineMillis = System.currentTimeMillis() + 30_000,
+                canContinue = { owner?.isActive != false }
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            emptyList()
+        }
+        if (times.isEmpty()) append("未读取到学校节次时间，预览时间为估算")
+        return times
+    }
+
+    private suspend fun resolveSemester(): Semester {
         val baseUrl = com.slai.campus.data.sis.SisConfig
             .baseUrlOrDefault(sessionStore.baseUrl(SchoolSystem.SIS))
         val discovery = runCatching { sisRemote.discoverSemester(baseUrl) }

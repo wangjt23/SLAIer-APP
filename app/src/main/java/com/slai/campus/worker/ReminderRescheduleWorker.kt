@@ -8,7 +8,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.slai.campus.core.common.AppLog
-import com.slai.campus.core.session.SessionManager
 import com.slai.campus.reminder.ReminderScheduler
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -23,8 +22,7 @@ import dagger.assisted.AssistedInject
 class ReminderRescheduleWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val reminderScheduler: ReminderScheduler,
-    private val sessionManager: SessionManager
+    private val reminderScheduler: ReminderScheduler
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {

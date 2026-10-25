@@ -19,11 +19,7 @@ class AttendanceRefreshTest {
         }
         override fun observeDay(date: LocalDate) = flowOf<AttendanceRecord?>(null)
         override fun observeMonth(month: String) = flowOf(AttendanceMonth(month))
-        override fun observeSyncState() = flowOf(AttendanceSyncState())
-        override fun observePunches(date: LocalDate) = flowOf(emptyList<AttendancePunch>())
-        override fun observePunches(from: LocalDate, to: LocalDate) = observePunches(from)
-        override fun observePunchSyncState() = observeSyncState()
-        override suspend fun cachedMonths() = emptyList<String>()
+        override fun observePunches(from: LocalDate, to: LocalDate) = flowOf(emptyList<AttendancePunch>())
     }
     private val day = LocalDate.of(2026, 9, 13)
     private val success = AttendanceRefreshResult.Success("2026-09", 13)
@@ -46,5 +42,16 @@ class AttendanceRefreshTest {
     }
     @Test fun `both sources must succeed to show sync success`() = runTest {
         assertThat(Repository(success, success).refreshWithPunches("2026-09", day, day)).isEqualTo(success)
+    }
+
+    @Test fun `superseded summary stops before submitting another old-context request`() = runTest {
+        val repo = Repository(AttendanceRefreshResult.Superseded, success)
+        assertThat(repo.refreshWithPunches("2026-09", day, day)).isEqualTo(AttendanceRefreshResult.Superseded)
+        assertThat(repo.punchCalls).isEqualTo(0)
+    }
+
+    @Test fun `superseded punch result must not publish a previously failed summary`() = runTest {
+        val repo = Repository(AttendanceRefreshResult.ServerError(503), AttendanceRefreshResult.Superseded)
+        assertThat(repo.refreshWithPunches("2026-09", day, day)).isEqualTo(AttendanceRefreshResult.Superseded)
     }
 }

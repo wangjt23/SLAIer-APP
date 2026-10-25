@@ -56,33 +56,26 @@ class StuPunchDataSource @Inject constructor(
             return@withContext Outcome(RemoteResult.NetworkUnavailable("设备无网络"), "")
         }
 
-        val filtered = request(baseUrl, from, to)
-        val first = filtered.first
-        if (first !is RemoteResult.Success) return@withContext Outcome(first, filtered.second)
-        if (first.data.isNotEmpty()) {
-            val inRange = first.data.filter { !it.date.isBefore(from) && !it.date.isAfter(to) }
-            if (inRange.isNotEmpty()) return@withContext Outcome(RemoteResult.Success(inRange), filtered.second)
-        }
-
-        // 回退：不带日期过滤。
-        val all = request(baseUrl, null, null)
-        when (val result = all.first) {
-            is RemoteResult.Success -> {
-                val inRange = result.data.filter { !it.date.isBefore(from) && !it.date.isAfter(to) }
-                Outcome(RemoteResult.Success(inRange), filtered.second + "\n" + all.second)
+        val traces = mutableListOf<String>()
+        val result = readPunchRange(from, to) { start, end ->
+            readPunchPages { page ->
+                val (result, trace) = requestPage(baseUrl, start, end, page)
+                traces += trace
+                result
             }
-            else -> Outcome(result, filtered.second + "\n" + all.second)
         }
+        Outcome(result, traces.joinToString("\n"))
     }
 
-    private suspend fun request(
+    private suspend fun requestPage(
         baseUrl: String,
         from: LocalDate?,
-        to: LocalDate?
-    ): Pair<RemoteResult<List<AttendancePunch>>, String> {
+        to: LocalDate?,
+        page: Int
+    ): Pair<RemoteResult<StuPunchPage>, String> {
         val url: HttpUrl = runCatching {
             StuConfig.url(baseUrl, StuConfig.PUNCH_LIST_API).toHttpUrl().newBuilder()
-                .addQueryParameter("page", "1")
+                .addQueryParameter("page", page.toString())
                 .addQueryParameter("limit", PAGE_SIZE.toString())
                 .addQueryParameter("startTime", from?.toString().orEmpty())
                 .addQueryParameter("endTime", to?.toString().orEmpty())
@@ -110,18 +103,20 @@ class StuPunchDataSource @Inject constructor(
         response.use { res ->
             val text = runCatching { res.peekBody(8L * 1024 * 1024).string() }.getOrNull().orEmpty()
             val trace = buildString {
-                appendLine("GET ${StuConfig.PUNCH_LIST_API}?page=1&limit=$PAGE_SIZE&startTime=${from ?: ""}&endTime=${to ?: ""}")
+                appendLine("GET ${StuConfig.PUNCH_LIST_API}?page=$page&limit=$PAGE_SIZE&startTime=${from ?: ""}&endTime=${to ?: ""}")
                 appendLine("status: ${res.code}  ct: ${res.contentTypeBase() ?: "—"}")
                 appendLine("bytes: ${text.length}  ${System.currentTimeMillis() - started}ms")
                 appendLine("preview: ${com.slai.campus.core.common.Redactor.preview(text, 240)}")
             }
-            val result: RemoteResult<List<AttendancePunch>> = when {
+            val result: RemoteResult<StuPunchPage> = when {
                 res.code in 300..399 && StuCheckInParser.isLoginUrl(res.header("Location")) ->
                     RemoteResult.SessionExpired
-                res.code == 401 || res.code == 403 -> RemoteResult.SessionExpired
+                res.code == 401 -> RemoteResult.SessionExpired
+                // A gateway/permission denial does not prove that the school session expired.
+                res.code == 403 && StuCheckInParser.hasLoginForm(text) -> RemoteResult.SessionExpired
                 !res.isSuccessful -> RemoteResult.ServerError(res.code, res.message.ifBlank { null })
-                StuCheckInParser.looksLikeLoginPage(text) -> RemoteResult.SessionExpired
-                else -> StuPunchParser.parse(text)
+                StuCheckInParser.hasLoginForm(text) -> RemoteResult.SessionExpired
+                else -> StuPunchParser.parsePage(text)
             }
             return result to trace
         }

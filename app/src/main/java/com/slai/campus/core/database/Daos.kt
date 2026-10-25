@@ -15,15 +15,6 @@ interface ScheduleDao {
     @Query(
         """
         SELECT * FROM course_occurrence
-        WHERE accountHash = :accountHash AND date = :date
-        ORDER BY startTime ASC, courseName ASC
-        """
-    )
-    fun observeByDate(accountHash: String, date: LocalDate): Flow<List<CourseOccurrenceEntity>>
-
-    @Query(
-        """
-        SELECT * FROM course_occurrence
         WHERE accountHash = :accountHash AND date BETWEEN :from AND :to
         ORDER BY date ASC, startTime ASC, courseName ASC
         """
@@ -39,9 +30,6 @@ interface ScheduleDao {
     )
     suspend fun rangeOnce(accountHash: String, from: LocalDate, to: LocalDate): List<CourseOccurrenceEntity>
 
-    @Query("SELECT DISTINCT date FROM course_occurrence WHERE accountHash = :accountHash ORDER BY date ASC")
-    fun observeDistinctDates(accountHash: String): Flow<List<LocalDate>>
-
     @Query("SELECT MIN(date) FROM course_occurrence WHERE accountHash = :accountHash")
     suspend fun earliestDate(accountHash: String): LocalDate?
 
@@ -51,17 +39,11 @@ interface ScheduleDao {
     @Query("SELECT COUNT(*) FROM course_occurrence WHERE accountHash = :accountHash")
     suspend fun count(accountHash: String): Int
 
-    @Query("SELECT COUNT(*) FROM course_occurrence WHERE accountHash = :accountHash")
-    fun observeCount(accountHash: String): Flow<Int>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(rows: List<CourseOccurrenceEntity>)
 
     @Query("DELETE FROM course_occurrence WHERE accountHash = :accountHash")
     suspend fun deleteForAccount(accountHash: String)
-
-    @Query("DELETE FROM course_occurrence WHERE accountHash = :accountHash AND id IN (:ids)")
-    suspend fun deleteByIds(accountHash: String, ids: List<String>)
 
     /**
      * Atomic replacement.
@@ -105,8 +87,6 @@ interface SyncMetaDao {
     @Upsert
     suspend fun upsert(meta: SyncMetaEntity)
 
-    @Query("DELETE FROM sync_meta WHERE accountHash = :accountHash")
-    suspend fun deleteForAccount(accountHash: String)
 }
 
 @Dao
@@ -116,6 +96,8 @@ interface AttendanceDao {
         """
         SELECT * FROM attendance_record
         WHERE accountHash = :accountHash AND date = :date
+        ORDER BY updatedAt DESC, month DESC
+        LIMIT 1
         """
     )
     fun observeDay(accountHash: String, date: LocalDate): Flow<AttendanceRecordEntity?>
@@ -128,18 +110,6 @@ interface AttendanceDao {
         """
     )
     fun observeMonth(accountHash: String, month: String): Flow<List<AttendanceRecordEntity>>
-
-    @Query("SELECT DISTINCT month FROM attendance_record WHERE accountHash = :accountHash ORDER BY month DESC")
-    fun observeMonths(accountHash: String): Flow<List<String>>
-
-    @Query(
-        """
-        SELECT * FROM attendance_record
-        WHERE accountHash = :accountHash AND date BETWEEN :from AND :to
-        ORDER BY date ASC
-        """
-    )
-    suspend fun rangeOnce(accountHash: String, from: LocalDate, to: LocalDate): List<AttendanceRecordEntity>
 
     @Query("SELECT COUNT(*) FROM attendance_record WHERE accountHash = :accountHash AND month = :month")
     suspend fun countMonth(accountHash: String, month: String): Int
@@ -170,21 +140,10 @@ interface AttendanceMetaDao {
     @Upsert
     suspend fun upsert(meta: AttendanceMetaEntity)
 
-    @Query("DELETE FROM attendance_meta WHERE accountHash = :accountHash")
-    suspend fun deleteForAccount(accountHash: String)
 }
 
 @Dao
 interface AttendancePunchDao {
-
-    @Query(
-        """
-        SELECT * FROM attendance_punch
-        WHERE accountHash = :accountHash AND date = :date
-        ORDER BY time ASC
-        """
-    )
-    fun observeDay(accountHash: String, date: LocalDate): Flow<List<AttendancePunchEntity>>
 
     @Query(
         """
@@ -194,15 +153,6 @@ interface AttendancePunchDao {
         """
     )
     fun observeRange(accountHash: String, from: LocalDate, to: LocalDate): Flow<List<AttendancePunchEntity>>
-
-    @Query(
-        """
-        SELECT * FROM attendance_punch
-        WHERE accountHash = :accountHash AND date BETWEEN :from AND :to
-        ORDER BY time ASC
-        """
-    )
-    suspend fun rangeOnce(accountHash: String, from: LocalDate, to: LocalDate): List<AttendancePunchEntity>
 
     @Query("SELECT COUNT(*) FROM attendance_punch WHERE accountHash = :accountHash AND date BETWEEN :from AND :to")
     suspend fun countRange(accountHash: String, from: LocalDate, to: LocalDate): Int
