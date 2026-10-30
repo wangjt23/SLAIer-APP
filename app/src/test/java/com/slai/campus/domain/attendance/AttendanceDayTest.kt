@@ -24,6 +24,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.YearMonth
 
 /** Synthetic overnight stays exercise the same date, cached rows, and pairing used by both cards. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -38,6 +39,19 @@ class AttendanceDayTest {
         var summaryResult: AttendanceRefreshResult? = null
         var punchResult: AttendanceRefreshResult? = null
         val summaryResults = mutableMapOf<String, AttendanceRefreshResult>()
+        val periodResults = mutableMapOf<String, AttendancePeriodResult>()
+        val resolutionDates = mutableListOf<LocalDate>()
+        var currentPeriodResult: AttendancePeriodResult? = null
+        override fun observePeriods() = flowOf(emptyList<AttendancePeriod>())
+        override suspend fun resolvePeriod(date: LocalDate): AttendancePeriodResult {
+            resolutionDates += date
+            return currentPeriodResult ?: periodForMonth(YearMonth.from(date).toString())
+        }
+        override suspend fun periodForMonth(month: String): AttendancePeriodResult {
+            val calendar = YearMonth.parse(month)
+            return periodResults[month] ?: AttendancePeriodResult.Found(
+                AttendancePeriod(month, calendar.atDay(1), calendar.atEndOfMonth()))
+        }
 
         override fun observeDay(date: LocalDate): Flow<AttendanceRecord?> = flow {
             daySubscriptions += date
@@ -169,11 +183,11 @@ class AttendanceDayTest {
             .isEqualTo(90)
     }
 
-    @Test fun `month and year boundary refreshes fetch the preceding attendance month and overnight exit`() = runTest {
+    @Test fun `current refresh queries the resolved period and its complete overnight context`() = runTest {
         listOf(
-            Triple("2026-11-01T00:30:00", "2026-10", date("2026-10-30") to date("2026-11-01")),
-            Triple("2027-01-01T04:59:59", "2026-12", date("2026-12-30") to date("2027-01-01")),
-            Triple("2027-01-01T05:00:00", "2027-01", date("2026-12-31") to date("2027-01-02"))
+            Triple("2026-11-01T00:30:00", "2026-10", date("2026-09-30") to date("2026-11-01")),
+            Triple("2027-01-01T04:59:59", "2026-12", date("2026-11-30") to date("2027-01-01")),
+            Triple("2027-01-01T05:00:00", "2027-01", date("2026-12-31") to date("2027-02-01"))
         ).forEach { (now, expectedMonth, expectedRange) ->
             val repository = Repository()
             val result = repository.refreshCurrentAttendance(time(now))
@@ -196,13 +210,100 @@ class AttendanceDayTest {
         assertThat(repository.punchRefreshes).isEmpty()
     }
 
+    @Test fun `late October current refresh uses November school statistics and all of its punches`() = runTest {
+        val period = AttendancePeriod("2026-11", date("2026-10-26"), date("2026-11-29"))
+        val repository = Repository().apply { currentPeriodResult = AttendancePeriodResult.Found(period) }
+        val result = repository.refreshCurrentAttendance(time("2026-10-31T04:23:00"))
+        assertThat(repository.resolutionDates).containsExactly(date("2026-10-30"))
+        assertThat(repository.refreshes).containsExactly("2026-11")
+        assertThat(repository.punchRefreshes).containsExactly(date("2026-10-25") to date("2026-11-30"))
+        assertThat(result).isEqualTo(AttendanceRefreshResult.Success("2026-11", 1))
+    }
+
+    @Test fun `a calendar opening can still refresh the previous school month`() = runTest {
+        val period = AttendancePeriod("2026-05", date("2026-05-04"), date("2026-06-07"))
+        val repository = Repository().apply { currentPeriodResult = AttendancePeriodResult.Found(period) }
+        repository.refreshCurrentAttendance(time("2026-06-01T12:00:00"))
+        assertThat(repository.refreshes).containsExactly("2026-05")
+        assertThat(repository.punchRefreshes).containsExactly(date("2026-05-03") to date("2026-06-08"))
+    }
+
+    @Test fun `a resolved school period is reused when refreshing its selected month`() = runTest {
+        val period = AttendancePeriod("2026-11", date("2026-10-26"), date("2026-11-29"))
+        val repository = Repository().apply {
+            currentPeriodResult = AttendancePeriodResult.Found(period)
+            periodResults["2026-11"] = AttendancePeriodResult.Found(period)
+        }
+        repository.refreshMonthWithCurrentDay("2026-11", time("2026-10-31T04:23:00"))
+        assertThat(repository.refreshes).containsExactly("2026-11")
+        assertThat(repository.punchRefreshes).containsExactly(date("2026-10-25") to date("2026-11-30"))
+    }
+
+    @Test fun `unavailable period never submits a guessed calendar month or reports sync success`() = runTest {
+        listOf(AttendanceRefreshResult.Unreachable("timeout"), AttendanceRefreshResult.Offline(true),
+            AttendanceRefreshResult.SchemaChanged("ambiguous ranges"), AttendanceRefreshResult.SessionExpired,
+            AttendanceRefreshResult.Superseded).forEach { failure ->
+            val repository = Repository().apply { currentPeriodResult = AttendancePeriodResult.Unavailable(failure) }
+            assertThat(repository.refreshCurrentAttendance(time("2026-10-31T04:23:00"))).isEqualTo(failure)
+            assertThat(repository.refreshes).isEmpty()
+            assertThat(repository.punchRefreshes).isEmpty()
+        }
+    }
+
+    @Test fun `selected period lookup failure is visible without damaging its cache`() = runTest {
+        val failure = AttendanceRefreshResult.SchemaChanged("invalid school weeks")
+        val repository = Repository().apply { periodResults["2026-11"] = AttendancePeriodResult.Unavailable(failure) }
+        assertThat(repository.refreshMonthWithCurrentDay("2026-11", time("2026-10-31T04:23:00"))).isEqualTo(failure)
+        assertThat(repository.refreshes).isEmpty()
+        assertThat(repository.punchRefreshes).isEmpty()
+    }
+
+    @Test fun `historical success cannot conceal a failure resolving the current school month`() = runTest {
+        val failure = AttendanceRefreshResult.Unreachable("weeks unavailable")
+        val repository = Repository().apply { currentPeriodResult = AttendancePeriodResult.Unavailable(failure) }
+        assertThat(repository.refreshMonthWithCurrentDay("2026-09", time("2026-10-31T04:23:00"))).isEqualTo(failure)
+        assertThat(repository.refreshes).containsExactly("2026-09")
+    }
+
+    @Test fun `an inconsistent resolved period cannot query unrelated current statistics`() = runTest {
+        val repository = Repository().apply {
+            currentPeriodResult = AttendancePeriodResult.Found(
+                AttendancePeriod("2026-10", date("2026-09-28"), date("2026-10-25")))
+        }
+        assertThat(repository.refreshCurrentAttendance(time("2026-10-31T04:23:00")))
+            .isInstanceOf(AttendanceRefreshResult.SchemaChanged::class.java)
+        assertThat(repository.refreshes).isEmpty()
+    }
+
+    @Test fun `selected month lookup cannot silently return another months period`() = runTest {
+        val repository = Repository().apply {
+            periodResults["2026-10"] = AttendancePeriodResult.Found(
+                AttendancePeriod("2026-11", date("2026-10-26"), date("2026-11-29")))
+        }
+        assertThat(repository.refreshMonthWithCurrentDay("2026-10", time("2026-10-31T04:23:00")))
+            .isInstanceOf(AttendanceRefreshResult.SchemaChanged::class.java)
+        assertThat(repository.refreshes).isEmpty()
+        assertThat(repository.punchRefreshes).isEmpty()
+    }
+
+    @Test fun `selected refresh does not accept an inconsistent current period even if labels match`() = runTest {
+        val period = AttendancePeriod("2026-10", date("2026-09-28"), date("2026-10-25"))
+        val repository = Repository().apply {
+            currentPeriodResult = AttendancePeriodResult.Found(period)
+            periodResults["2026-10"] = AttendancePeriodResult.Found(period)
+        }
+        assertThat(repository.refreshMonthWithCurrentDay("2026-10", time("2026-10-31T04:23:00")))
+            .isInstanceOf(AttendanceRefreshResult.SchemaChanged::class.java)
+        assertThat(repository.refreshes).containsExactly("2026-10")
+    }
+
     @Test fun `browsing the new month before five refreshes the preceding month's summary despite overlapping punches`() = runTest {
         val repository = Repository()
         val result = repository.refreshMonthWithCurrentDay("2026-11", time("2026-11-01T00:30:00"))
         assertThat(repository.refreshes).containsExactly("2026-11", "2026-10").inOrder()
         assertThat(repository.punchRefreshes).containsExactly(
-            date("2026-10-24") to date("2026-12-01"),
-            date("2026-10-30") to date("2026-11-01")
+            date("2026-10-31") to date("2026-12-01"),
+            date("2026-09-30") to date("2026-11-01")
         ).inOrder()
         assertThat(result).isEqualTo(AttendanceRefreshResult.Success("2026-11", 1))
     }
@@ -211,7 +312,7 @@ class AttendanceDayTest {
         val repository = Repository()
         repository.refreshMonthWithCurrentDay("2026-10", time("2026-11-01T04:59:59"))
         assertThat(repository.refreshes).containsExactly("2026-10")
-        assertThat(repository.punchRefreshes).containsExactly(date("2026-09-23") to date("2026-11-01"))
+        assertThat(repository.punchRefreshes).containsExactly(date("2026-09-30") to date("2026-11-01"))
     }
 
     @Test fun `selected month expiry stops refresh while current-day failures remain visible`() = runTest {
@@ -230,7 +331,7 @@ class AttendanceDayTest {
         assertThat(expiredCurrent.refreshMonthWithCurrentDay("2026-11", now))
             .isEqualTo(AttendanceRefreshResult.SessionExpired)
         assertThat(expiredCurrent.refreshes).containsExactly("2026-11", "2026-10").inOrder()
-        assertThat(expiredCurrent.punchRefreshes).containsExactly(date("2026-10-24") to date("2026-12-01"))
+        assertThat(expiredCurrent.punchRefreshes).containsExactly(date("2026-10-31") to date("2026-12-01"))
 
         val failedCurrent = Repository().apply {
             summaryResults["2026-10"] = AttendanceRefreshResult.ServerError(503)

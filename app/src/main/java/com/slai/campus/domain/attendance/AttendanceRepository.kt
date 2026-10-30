@@ -17,6 +17,15 @@ interface AttendanceRepository {
     /** Cached attendance for a whole month, ordered by date. Reads Room only. */
     fun observeMonth(month: String): Flow<AttendanceMonth>
 
+    /** Verified school periods for this account. Reads cache only, including before first refresh. */
+    fun observePeriods(): Flow<List<AttendancePeriod>>
+
+    /** Resolve the school month containing [date], consulting the school when cache is insufficient. */
+    suspend fun resolvePeriod(date: LocalDate): AttendancePeriodResult
+
+    /** Read the school's full week range for a particular statistical month. */
+    suspend fun periodForMonth(month: String): AttendancePeriodResult
+
     /** Fetches (or refreshes) one month from the school. */
     suspend fun refresh(month: String): AttendanceRefreshResult
 

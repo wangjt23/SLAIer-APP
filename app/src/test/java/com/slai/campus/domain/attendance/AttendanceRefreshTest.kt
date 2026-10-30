@@ -12,6 +12,11 @@ class AttendanceRefreshTest {
         val punches: AttendanceRefreshResult
     ) : AttendanceRepository {
         var punchCalls = 0
+        override fun observePeriods() = flowOf(emptyList<AttendancePeriod>())
+        override suspend fun resolvePeriod(date: LocalDate) =
+            AttendancePeriodResult.Unavailable(AttendanceRefreshResult.Failed("unused"))
+        override suspend fun periodForMonth(month: String) =
+            AttendancePeriodResult.Unavailable(AttendanceRefreshResult.Failed("unused"))
         override suspend fun refresh(month: String) = summary
         override suspend fun refreshPunches(from: LocalDate, to: LocalDate): AttendanceRefreshResult {
             punchCalls++

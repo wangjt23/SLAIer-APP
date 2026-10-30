@@ -98,6 +98,12 @@ class AttendanceRefreshUpdateTest {
     private class OriginRepository : AttendanceRepository {
         val origins = mutableListOf<AttendanceRefreshOrigin>()
         val months = mutableListOf<String>()
+        override fun observePeriods() = flowOf(emptyList<AttendancePeriod>())
+        override suspend fun resolvePeriod(date: LocalDate) = periodForMonth(YearMonth.from(date).toString())
+        override suspend fun periodForMonth(month: String): AttendancePeriodResult {
+            val calendar = YearMonth.parse(month)
+            return AttendancePeriodResult.Found(AttendancePeriod(month, calendar.atDay(1), calendar.atEndOfMonth()))
+        }
         override fun observeDay(date: LocalDate) = flowOf<AttendanceRecord?>(null)
         override fun observeMonth(month: String) = flowOf(AttendanceMonth(month))
         override fun observePunches(from: LocalDate, to: LocalDate) = flowOf(emptyList<AttendancePunch>())

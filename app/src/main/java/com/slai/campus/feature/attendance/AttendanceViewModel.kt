@@ -10,6 +10,10 @@ import com.slai.campus.core.session.SessionState
 import com.slai.campus.core.web.AppUrlProvider
 import com.slai.campus.core.web.AppUrls
 import com.slai.campus.domain.attendance.AttendanceMonth
+import com.slai.campus.domain.attendance.AttendancePeriod
+import com.slai.campus.domain.attendance.AttendancePeriodResult
+import com.slai.campus.domain.attendance.attendancePeriodPunchRange
+import com.slai.campus.domain.attendance.currentAttendancePeriod
 import com.slai.campus.domain.attendance.CurrentAttendance
 import com.slai.campus.domain.attendance.attendanceDate
 import com.slai.campus.domain.attendance.observeCurrentAttendance
@@ -27,9 +31,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -141,9 +146,16 @@ class AttendanceViewModel @Inject constructor(
     private val timeProvider: TimeProvider
 ) : ViewModel() {
 
+    private val periods = MutableStateFlow<List<AttendancePeriod>>(emptyList())
     private val month = MutableStateFlow(currentMonth())
     private val refreshing = MutableStateFlow(false)
     private val lastResult = MutableStateFlow<AttendanceRefreshResult?>(null)
+    private data class ResultContext(val owner: String?, val accountVersion: Long, val month: String)
+    private data class LocalCompletion(val context: ResultContext, val consumedSequence: Long)
+    private var resultContext: ResultContext? = null
+    private var localCompletion: LocalCompletion? = null
+    // A deliberate history selection must survive clock ticks and background session recovery.
+    private var followingCurrentPeriod = true
 
     private val monthFlow = month.flatMapLatest { repository.observeMonth(it) }
 
@@ -161,18 +173,17 @@ class AttendanceViewModel @Inject constructor(
     // kotlinx combine() has typed overloads only up to 5 flows, so the pieces are folded together.
     private val currentAttendance = repository.observeCurrentAttendance(clock)
 
-    /**
-     * 明细里出现的第一天可能属于上个月 —— 学校按**教学周**分组，2026-09 的第 1 周就是
-     * 08-31 ~ 09-06 —— 所以闸机流水必须覆盖"上个月最后一周 ~ 本月最后一天"。
-     * 只查日历月会把 08-31 整个漏掉，那一天就永远显示"无刷卡记录"（实测 08-31 有 4 条流水）。
-     */
+    /** Keep the school's complete period, plus the adjacent overnight entry/exit context. */
     private fun punchSpanFor(monthKey: String): Pair<LocalDate, LocalDate> =
-        monthPunchRange(java.time.YearMonth.parse(monthKey))
+        periods.value.singleOrNull { it.month == monthKey }?.let(::attendancePeriodPunchRange)
+            ?: monthPunchRange(java.time.YearMonth.parse(monthKey))
 
-    private val monthPunches = month.flatMapLatest { key ->
-        val (from, to) = punchSpanFor(key)
-        repository.observePunches(from, to)
-    }
+    private data class MonthPunches(val month: String, val punches: List<AttendancePunch>)
+
+    private val monthPunches = combine(month, periods) { key, _ -> key to punchSpanFor(key) }
+        .distinctUntilChanged().flatMapLatest { (key, span) ->
+            repository.observePunches(span.first, span.second).map { MonthPunches(key, it) }
+        }
 
     private val core = combine(
         month,
@@ -181,7 +192,8 @@ class AttendanceViewModel @Inject constructor(
         monthPunches,
         refreshing
     ) { monthValue, current, monthData, punches, isRefreshing ->
-        Core(monthValue, current, monthData, punches, isRefreshing, null)
+        Core(monthValue, current, monthData.takeIf { it.month == monthValue } ?: AttendanceMonth(monthValue),
+            punches.punches.takeIf { punches.month == monthValue }.orEmpty(), isRefreshing, null)
     }.let { flow ->
         combine(flow, lastResult) { c, result -> c.copy(lastResult = result) }
     }
@@ -228,30 +240,58 @@ class AttendanceViewModel @Inject constructor(
         viewModelScope.launch {
             timeProvider.observeDateTime().collect(::updateClock)
         }
+        viewModelScope.launch {
+            var previousOwner: String? = null
+            sessionManager.state.map { it.accountHashOf(SchoolSystem.STU) }.distinctUntilChanged()
+                .flatMapLatest { owner ->
+                    // Initial preference hydration is not a deliberate account switch.
+                    if (previousOwner != null && previousOwner != owner) {
+                        followingCurrentPeriod = true
+                    }
+                    previousOwner = owner
+                    // A period fetched for the previous student must not direct a new login's
+                    // requests before its own account-scoped metadata has arrived.
+                    periods.value = emptyList()
+                    repository.observePeriods()
+                }.collect { known ->
+                    periods.value = known
+                    // A foreground recovery may deliver the new period before the next local tick.
+                    updateClock(timeProvider.nowDateTime())
+                }
+        }
         // A foreground recovery runs outside this ViewModel; its complete refresh must replace
         // an old transport error here as well. Authentication alone proves no punch data.
         viewModelScope.launch {
             var appliedSequence = 0L
             var observedOwner: String? = null
-            var observedMonth: String? = null
+            var observedScope: Triple<String, LocalDate, LocalDate>? = null
             var ownerInitialized = false
-            combine(repository.refreshUpdates, sessionManager.state, month) { updates, session, selected ->
+            combine(repository.refreshUpdates, sessionManager.state, month, periods) { updates, session, selected, _ ->
                 val owner = session.accountHashOf(SchoolSystem.STU)
-                if (observedMonth != selected) appliedSequence = 0L
-                observedMonth = selected
+                val (from, to) = punchSpanFor(selected)
+                val scope = Triple(selected, from, to)
+                if (observedScope != scope) appliedSequence = 0L
+                observedScope = scope
                 if (ownerInitialized && observedOwner != owner) {
                     appliedSequence = 0L
                     // Initial DataStore hydration may follow the first completed request.
-                    if (observedOwner != null) lastResult.value = null
+                    if (observedOwner != null && (resultContext?.owner != owner ||
+                            resultContext?.accountVersion != sessionManager.accountVersion(SchoolSystem.STU))) {
+                        clearResult()
+                    }
                 }
                 observedOwner = owner
                 ownerInitialized = true
-                val (from, to) = punchSpanFor(selected)
                 latestAttendanceRefresh(updates, owner, sessionManager.accountVersion(SchoolSystem.STU), selected, from, to)
             }.collect { update ->
                 if (update != null && update.sequence > appliedSequence) {
                     appliedSequence = update.sequence
-                    lastResult.value = update.result
+                    val context = ResultContext(update.accountHash, update.accountVersion, update.scope.month)
+                    val consumed = localCompletion?.takeIf { it.context == context }?.consumedSequence ?: 0L
+                    if (update.sequence > consumed) {
+                        resultContext = context
+                        lastResult.value = update.result
+                    }
                 }
             }
         }
@@ -270,10 +310,42 @@ class AttendanceViewModel @Inject constructor(
                     selectedMonth = { month.value },
                     now = timeProvider::nowDateTime,
                     refreshMonth = { selected, now -> repository.refreshMonthWithCurrentDay(selected, now) },
-                    updateClock = ::updateClock
+                    updateClock = ::updateClock,
+                    prepareMonth = { now ->
+                        if (!followingCurrentPeriod) null else {
+                            val resolved = repository.resolvePeriod(attendanceDate(now))
+                            if (sessionManager.accountVersion(SchoolSystem.STU) != requestedAccountVersion) {
+                                AttendanceRefreshResult.Superseded
+                            } else when (resolved) {
+                                is AttendancePeriodResult.Unavailable -> resolved.reason
+                                is AttendancePeriodResult.Found -> {
+                                    if (attendanceDate(now) !in resolved.period) {
+                                        AttendanceRefreshResult.SchemaChanged("学校考勤周期不包含当前考勤日")
+                                    } else {
+                                        periods.value = periods.value.filterNot { it.month == resolved.period.month } + resolved.period
+                                        selectMonth(resolved.period.month)
+                                        null
+                                    }
+                                }
+                            }
+                        }
+                    }
                 )
+                // Reading the persisted identity can suspend. Check the request version after
+                // that read so a login during it cannot publish the previous account's result.
+                val completedOwner = sessionManager.current().accountHashOf(SchoolSystem.STU)
                 if (result !is AttendanceRefreshResult.Superseded &&
                     sessionManager.accountVersion(SchoolSystem.STU) == requestedAccountVersion) {
+                    val context = ResultContext(completedOwner, requestedAccountVersion, month.value)
+                    // A historical refresh can publish its summary success before a current-day
+                    // follow-up fails. Those already-produced signals are part of this combined
+                    // result, even if their collector has not run yet.
+                    val consumed = repository.refreshUpdates.value.values.filter {
+                        it.accountHash == context.owner && it.accountVersion == context.accountVersion &&
+                            it.scope.month == context.month
+                    }.maxOfOrNull { it.sequence } ?: 0L
+                    localCompletion = LocalCompletion(context, consumed)
+                    resultContext = context
                     lastResult.value = result
                 }
             } finally {
@@ -284,37 +356,58 @@ class AttendanceViewModel @Inject constructor(
 
     fun previousMonth() {
         if (refreshing.value) return
-        month.value = shiftMonth(month.value, -1)
-        lastResult.value = null
-        refresh()
+        navigateMonth(-1)
     }
 
     fun nextMonth() {
         if (refreshing.value) return
-        month.value = shiftMonth(month.value, 1)
-        lastResult.value = null
+        navigateMonth(1)
+    }
+
+    private fun navigateMonth(delta: Long) {
+        val selected = shiftMonth(month.value, delta)
+        followingCurrentPeriod = currentAttendancePeriod(
+            attendanceDate(timeProvider.nowDateTime()), periods.value
+        )?.month == selected
+        month.value = selected
+        clearResult()
+        localCompletion = null
         refresh()
     }
 
     fun currentMonth() = currentMonthString()
 
     private fun currentMonthString(): String {
-        return java.time.YearMonth.from(attendanceDate(timeProvider.nowDateTime())).toString()
+        val date = attendanceDate(timeProvider.nowDateTime())
+        return currentAttendancePeriod(date, periods.value)?.month ?: java.time.YearMonth.from(date).toString()
     }
 
     private fun updateClock(now: java.time.LocalDateTime) {
-        val previousMonth = java.time.YearMonth.from(attendanceDate(clock.value)).toString()
-        val currentMonth = java.time.YearMonth.from(attendanceDate(now)).toString()
-        // Follow the current month across its boundary, but preserve a historical month selection.
-        val changedMonth = previousMonth != currentMonth && month.value == previousMonth
-        if (changedMonth) {
-            month.value = currentMonth
-            lastResult.value = null
-        }
+        val changedDate = attendanceDate(clock.value) != attendanceDate(now)
         clock.value = now
-        // An in-flight refresh will follow the new selection before publishing its result.
-        // Otherwise start the new month's first fetch immediately.
-        if (changedMonth) refresh()
+        followCachedPeriod(attendanceDate(now))
+        // No calendar arithmetic decides the school month. Unknown boundaries are resolved before
+        // the next request; an in-flight refresh repeats after the date/selection changes.
+        if (changedDate) refresh()
+    }
+
+    private fun followCachedPeriod(date: LocalDate) {
+        if (followingCurrentPeriod) currentAttendancePeriod(date, periods.value)?.let { period ->
+            if (selectMonth(period.month)) refresh()
+        }
+    }
+
+    private fun selectMonth(value: String): Boolean {
+        if (month.value == value) return false
+        month.value = value
+        clearResult()
+        localCompletion = null
+        return true
+    }
+
+    private fun clearResult() {
+        resultContext = null
+        lastResult.value = null
     }
 
     private fun shiftMonth(value: String, delta: Long): String {

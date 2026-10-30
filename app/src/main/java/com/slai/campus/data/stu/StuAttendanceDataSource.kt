@@ -11,6 +11,7 @@ import com.slai.campus.domain.attendance.AttendanceMonth
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
@@ -80,6 +81,23 @@ class StuAttendanceDataSource @Inject constructor(
         }
     }
 
+    /** Small protected request for the complete configured cycle, not just days with punches. */
+    suspend fun fetchPeriod(baseUrl: String, month: String): RemoteResult<StuAttendancePeriodMetadata> = withContext(io) {
+        if (!networkMonitor.hasNetwork) return@withContext RemoteResult.NetworkUnavailable("设备无网络")
+        val response = runCatching { apiClient.newCall(attendancePeriodRequest(baseUrl, month)).execute() }
+            .getOrElse { return@withContext RemoteResult.NetworkUnavailable(it.javaClass.simpleName) }
+        response.use { res ->
+            val text = runCatching { res.peekBody(512L * 1024).string() }.getOrNull().orEmpty()
+            when {
+                res.code in 300..399 && StuCheckInParser.isLoginUrl(res.header("Location")) -> RemoteResult.SessionExpired
+                res.code == 401 || (res.code == 403 && StuCheckInParser.hasLoginForm(text)) -> RemoteResult.SessionExpired
+                !res.isSuccessful -> RemoteResult.ServerError(res.code, res.message.ifBlank { null })
+                StuCheckInParser.hasLoginForm(text) -> RemoteResult.SessionExpired
+                else -> StuAttendancePeriodParser.parse(text, month)
+            }
+        }
+    }
+
     /** Current month in `YYYY-MM`. */
     fun currentMonth(): String = timeProvider.today().let { "%04d-%02d".format(it.year, it.monthValue) }
 
@@ -90,6 +108,16 @@ class StuAttendanceDataSource @Inject constructor(
             Regex("^\\d{4}-\\d{2}$").matches(month) && month.substring(5).toIntOrNull() in 1..12
     }
 }
+
+internal fun attendancePeriodRequest(baseUrl: String, month: String): Request = Request.Builder()
+    .url(StuConfig.url(baseUrl, StuConfig.ATTENDANCE_WEEKS_API).toHttpUrl().newBuilder()
+        .addQueryParameter("month", month).build())
+    .get()
+    .header("Accept", "application/json, text/javascript, */*; q=0.01")
+    .header("Cache-Control", "no-cache, no-store")
+    .header("X-Requested-With", "XMLHttpRequest")
+    .header("Referer", StuConfig.url(baseUrl, StuConfig.ATTENDANCE_PAGE))
+    .build()
 
 internal fun attendanceRequest(baseUrl: String, month: String): Request {
     val url = StuConfig.url(baseUrl, StuConfig.ATTENDANCE_API)

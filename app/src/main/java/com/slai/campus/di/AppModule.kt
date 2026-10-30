@@ -7,6 +7,7 @@ import com.slai.campus.core.common.ApplicationScope
 import com.slai.campus.core.common.IoDispatcher
 import com.slai.campus.core.database.AppDatabase
 import com.slai.campus.core.database.MIGRATION_3_4
+import com.slai.campus.core.database.MIGRATION_4_5
 import com.slai.campus.core.database.ScheduleDao
 import com.slai.campus.core.database.SyncMetaDao
 import com.slai.campus.core.network.HttpClientFactory
@@ -95,7 +96,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.NAME)
-            .addMigrations(MIGRATION_3_4)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
             // The pre-v3 cache formats had no migration. Every v3 row now has an explicit,
             // non-destructive path; a missing migration must never silently clear that cache.
             .fallbackToDestructiveMigrationFrom(true, 1, 2)

@@ -177,7 +177,7 @@ class SessionManager @Inject constructor(
         owner: String,
         expectedVersion: Long,
         expectedAuthenticationVersion: Long?,
-        block: (String, Long) -> T
+        block: suspend (String, Long) -> T
     ): T? = accountMutex.withLock {
         val currentVersion = accountVersion(system)
         val binding = ownerBindings[system]

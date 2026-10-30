@@ -131,6 +131,9 @@ interface AttendanceDao {
 @Dao
 interface AttendanceMetaDao {
 
+    @Query("SELECT * FROM attendance_meta WHERE accountHash = :accountHash ORDER BY month DESC")
+    fun observeAll(accountHash: String): Flow<List<AttendanceMetaEntity>>
+
     @Query("SELECT * FROM attendance_meta WHERE accountHash = :accountHash AND month = :month")
     fun observe(accountHash: String, month: String): Flow<AttendanceMetaEntity?>
 

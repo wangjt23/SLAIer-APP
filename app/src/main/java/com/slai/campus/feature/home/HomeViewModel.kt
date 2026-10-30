@@ -20,6 +20,7 @@ import com.slai.campus.domain.attendance.observeCurrentAttendance
 import com.slai.campus.domain.attendance.refreshCurrentAttendance
 import com.slai.campus.domain.attendance.attendancePunchRange
 import com.slai.campus.domain.attendance.latestAttendanceRefresh
+import com.slai.campus.domain.attendance.currentAttendancePeriod
 import com.slai.campus.domain.attendance.attendanceDate as attendanceDateAt
 import com.slai.campus.domain.schedule.ClassOccurrence
 import com.slai.campus.domain.schedule.ScheduleRepository
@@ -160,8 +161,10 @@ class HomeViewModel @Inject constructor(
             var appliedSequence = 0L
             var observedOwner: String? = null
             var observedDate: java.time.LocalDate? = null
+            var observedMonth: String? = null
             var ownerInitialized = false
-            combine(attendanceRepository.refreshUpdates, sessionManager.state, clock) { updates, session, now ->
+            combine(attendanceRepository.refreshUpdates, sessionManager.state, clock,
+                attendanceRepository.observePeriods()) { updates, session, now, periods ->
                 val owner = session.accountHashOf(SchoolSystem.STU)
                 if (ownerInitialized && observedOwner != owner) {
                     appliedSequence = 0L
@@ -170,11 +173,14 @@ class HomeViewModel @Inject constructor(
                 observedOwner = owner
                 ownerInitialized = true
                 val date = attendanceDateAt(now)
-                if (observedDate != date) appliedSequence = 0L
+                val month = currentAttendancePeriod(date, periods)?.month
+                    ?: java.time.YearMonth.from(date).toString()
+                if (observedDate != date || observedMonth != month) appliedSequence = 0L
                 observedDate = date
+                observedMonth = month
                 val (from, to) = attendancePunchRange(date)
                 latestAttendanceRefresh(updates, owner, sessionManager.accountVersion(SchoolSystem.STU),
-                    java.time.YearMonth.from(date).toString(), from, to)
+                    month, from, to)
             }.collect { update ->
                 if (update != null && update.sequence > appliedSequence) {
                     appliedSequence = update.sequence

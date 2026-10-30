@@ -21,12 +21,12 @@ class AttendanceSnapshotMigrationTest {
 
     @Test fun version3MigrationPreservesAllCachedTablesAndAttendanceFields() = runBlocking {
         withDatabase(migrateVersion3 = true) { database ->
-            // Opening through Room runs MIGRATION_3_4 and validates its complete schema.
+            // Opening through Room runs both migrations and validates the complete schema.
             val migrated = database.attendanceDao().observeMonth("account", "2026-09").first().single()
             assertEquals(record("2026-09", 100, 600), migrated)
             assertEquals("other", database.attendanceDao().observeMonth("other", "2026-09").first().single().accountHash)
             val sqlite = database.openHelper.writableDatabase
-            assertEquals(4, sqlite.version)
+            assertEquals(5, sqlite.version)
             val retainedValues = mapOf(
                 "course_occurrence" to "SELECT courseName FROM course_occurrence WHERE id='course'",
                 "sync_meta" to "SELECT lastError FROM sync_meta WHERE accountHash='account'",
@@ -58,6 +58,27 @@ class AttendanceSnapshotMigrationTest {
             database.attendanceDao().replaceMonth("account", "2026-10", listOf(record("2026-10", 200, 300)))
             assertEquals(1, database.attendanceDao().countMonth("account", "2026-09"))
             assertEquals(1, database.attendanceDao().countMonth("account", "2026-10"))
+        }
+    }
+
+    @Test fun version4MigrationKeepsOldStatsAndRecordsAndStartsWithUnknownSchoolPeriod() = runBlocking {
+        withDatabase(migrateVersion4 = true) { database ->
+            assertEquals(5, database.openHelper.writableDatabase.version)
+            assertEquals(record("2026-09", 100, 600), database.attendanceDao().observeMonth("account", "2026-09").first().single())
+            val original = database.attendanceMetaDao().all("account").single()
+            assertEquals("days=1", original.stats)
+            assertEquals(null, original.periodWeeks)
+            assertEquals(null, original.periodUpdatedAt)
+            database.attendanceMetaDao().upsert(original.copy(
+                periodWeeks = """[{"range":"2026-08-31,2026-09-06","label":"第1周"}]""",
+                periodUpdatedAt = 1234
+            ))
+            val read = database.attendanceMetaDao().observeAll("account").first().single()
+            assertEquals(original.stats, read.stats)
+            assertEquals(1234L, read.periodUpdatedAt)
+            assertEquals(true, read.periodWeeks?.contains("2026-08-31"))
+            assertEquals(emptyList<AttendanceMetaEntity>(), database.attendanceMetaDao().observeAll("other").first())
+            assertEquals(1, database.attendanceDao().countMonth("other", "2026-09"))
         }
     }
 
@@ -98,11 +119,11 @@ class AttendanceSnapshotMigrationTest {
         }
     }
 
-    private suspend fun withDatabase(migrateVersion3: Boolean = false, block: suspend (AppDatabase) -> Unit) {
+    private suspend fun withDatabase(migrateVersion3: Boolean = false, migrateVersion4: Boolean = false, block: suspend (AppDatabase) -> Unit) {
         val name = "attendance-test-${UUID.randomUUID()}.db"
-        if (migrateVersion3) createVersion3(name)
+        if (migrateVersion3 || migrateVersion4) createOldVersion(name, if (migrateVersion4) 4 else 3)
         val database = Room.databaseBuilder(context, AppDatabase::class.java, name)
-            .addMigrations(MIGRATION_3_4)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
             .build()
         try { block(database) } finally {
             database.close()
@@ -118,13 +139,14 @@ class AttendanceSnapshotMigrationTest {
     )
 
     /** Independent schema fixture copied from the published v3 Room schema, not migration SQL. */
-    private fun createVersion3(name: String) {
+    private fun createOldVersion(name: String, version: Int) {
         context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { db ->
             db.execSQL("CREATE TABLE course_occurrence (id TEXT NOT NULL PRIMARY KEY, accountHash TEXT NOT NULL, courseName TEXT NOT NULL, teacher TEXT, location TEXT, date INTEGER NOT NULL, startTime INTEGER NOT NULL, endTime INTEGER NOT NULL, source TEXT NOT NULL, weekIndex INTEGER, periodStart INTEGER, periodEnd INTEGER, courseCode TEXT, teachingClass TEXT, campus TEXT, updatedAt INTEGER NOT NULL)")
             db.execSQL("CREATE INDEX index_course_occurrence_accountHash_date ON course_occurrence(accountHash,date)")
             db.execSQL("CREATE INDEX index_course_occurrence_accountHash_updatedAt ON course_occurrence(accountHash,updatedAt)")
             db.execSQL("CREATE TABLE sync_meta (accountHash TEXT NOT NULL, system TEXT NOT NULL, lastSuccessAt INTEGER, lastAttemptAt INTEGER, parserVersion TEXT, lastError TEXT, integrationMode TEXT, semester_first_week_monday TEXT, PRIMARY KEY(accountHash,system))")
-            db.execSQL("CREATE TABLE attendance_record (accountHash TEXT NOT NULL, date INTEGER NOT NULL, month TEXT NOT NULL, weekDay TEXT, dayType TEXT, isHoliday TEXT, firstSwipe INTEGER, lastSwipe INTEGER, enterCount INTEGER, exitCount INTEGER, durationText TEXT, durationMinutes INTEGER, qualified INTEGER, leave INTEGER, appeal INTEGER, swipes TEXT, updatedAt INTEGER NOT NULL, PRIMARY KEY(accountHash,date))")
+            val primaryKey = if (version == 4) "accountHash,month,date" else "accountHash,date"
+            db.execSQL("CREATE TABLE attendance_record (accountHash TEXT NOT NULL, date INTEGER NOT NULL, month TEXT NOT NULL, weekDay TEXT, dayType TEXT, isHoliday TEXT, firstSwipe INTEGER, lastSwipe INTEGER, enterCount INTEGER, exitCount INTEGER, durationText TEXT, durationMinutes INTEGER, qualified INTEGER, leave INTEGER, appeal INTEGER, swipes TEXT, updatedAt INTEGER NOT NULL, PRIMARY KEY($primaryKey))")
             db.execSQL("CREATE INDEX index_attendance_record_accountHash_month ON attendance_record(accountHash,month)")
             db.execSQL("CREATE TABLE attendance_meta (accountHash TEXT NOT NULL, month TEXT NOT NULL, lastSuccessAt INTEGER, lastAttemptAt INTEGER, lastError TEXT, stats TEXT, PRIMARY KEY(accountHash,month))")
             db.execSQL("CREATE TABLE attendance_punch (id TEXT NOT NULL PRIMARY KEY, accountHash TEXT NOT NULL, time TEXT NOT NULL, date INTEGER NOT NULL, direction TEXT NOT NULL, channel TEXT, place TEXT, openingType TEXT, result TEXT, updatedAt INTEGER NOT NULL)")
@@ -139,7 +161,7 @@ class AttendanceSnapshotMigrationTest {
             listOf("account", "other").forEach { account ->
                 db.execSQL("INSERT INTO attendance_record VALUES (?,?,'2026-09','星期四','教学日','否',28800,64800,2,2,'10 小时',600,1,0,1,'[]',100)", arrayOf(account, day.toEpochDay()))
             }
-            db.version = 3
+            db.version = version
         }
     }
 }

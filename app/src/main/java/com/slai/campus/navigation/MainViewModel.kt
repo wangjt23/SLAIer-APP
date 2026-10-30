@@ -14,7 +14,7 @@ import com.slai.campus.core.session.SessionSnapshot
 import com.slai.campus.core.session.SessionState
 import com.slai.campus.domain.schedule.RefreshReason
 import com.slai.campus.domain.attendance.attendanceDate
-import com.slai.campus.domain.attendance.refreshMonthWithCurrentDay
+import com.slai.campus.domain.attendance.refreshCurrentAttendance
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
 import com.slai.campus.domain.attendance.AttendanceRefreshOrigin
 import com.slai.campus.domain.schedule.ScheduleRepository
@@ -193,8 +193,7 @@ class MainViewModel @Inject constructor(
         val date = attendanceDate(now)
         if (!attendanceRefreshGate.claim(version, date, timeProvider.epochMillis(), force)) return
         sessionManager.requireAccountHash(SchoolSystem.STU)
-        val month = java.time.YearMonth.from(date).toString()
-        attendanceRepository.refreshMonthWithCurrentDay(month, now, AttendanceRefreshOrigin.SESSION_RECOVERY)
+        attendanceRepository.refreshCurrentAttendance(now, AttendanceRefreshOrigin.SESSION_RECOVERY)
         // Keep this refresh inside the active recovery and consume its own final state before the
         // asynchronous UI notification. A failing punch endpoint must not restart this same flow.
         sessionRecovery.update(automaticForegroundAvailable.value, savedLogin.value.revision,

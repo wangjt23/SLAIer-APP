@@ -41,20 +41,36 @@ class AttendanceRefreshFeedbackTest {
             transform(data.value).also { data.value = it }
     }
 
-    private class Repository : AttendanceRepository {
+    private class Repository(schoolPeriods: List<AttendancePeriod>) : AttendanceRepository {
         private val results = AttendanceRefreshUpdates()
         override val refreshUpdates = results.state
+        val periods = MutableStateFlow(schoolPeriods)
+        var periodFailure: AttendanceRefreshResult? = null
+        var publishRefreshResults = false
+        override fun observePeriods() = periods
+        override suspend fun resolvePeriod(date: LocalDate): AttendancePeriodResult {
+            periodFailure?.let { return AttendancePeriodResult.Unavailable(it) }
+            return currentAttendancePeriod(date, periods.value)?.let { AttendancePeriodResult.Found(it) }
+                ?: AttendancePeriodResult.Unavailable(AttendanceRefreshResult.SchemaChanged("no period"))
+        }
+        override suspend fun periodForMonth(month: String): AttendancePeriodResult = periods.value.singleOrNull { it.month == month }
+            ?.let { AttendancePeriodResult.Found(it) }
+            ?: AttendancePeriodResult.Unavailable(AttendanceRefreshResult.SchemaChanged("no period"))
         var result: AttendanceRefreshResult = AttendanceRefreshResult.Unreachable("old timeout")
         var pending: CompletableDeferred<AttendanceRefreshResult>? = null
         val pendingByMonth = mutableMapOf<String, CompletableDeferred<AttendanceRefreshResult>>()
         override fun observeDay(date: LocalDate) = flowOf<AttendanceRecord?>(null)
         override fun observeMonth(month: String) = flowOf(AttendanceMonth(month))
         override fun observePunches(from: LocalDate, to: LocalDate) = flowOf(emptyList<AttendancePunch>())
-        override suspend fun refresh(month: String) = pendingByMonth[month]?.await() ?: pending?.await() ?: result
+        override suspend fun refresh(month: String): AttendanceRefreshResult {
+            val refreshed = pendingByMonth[month]?.await() ?: pending?.await() ?: result
+            if (publishRefreshResults) publish(refreshed, month = month)
+            return refreshed
+        }
         override suspend fun refreshPunches(from: LocalDate, to: LocalDate) = result
         fun publish(result: AttendanceRefreshResult, owner: String = "owner", version: Long = 0,
                     fullMonth: Boolean = true, month: String = "2026-10") {
-            val (from, to) = if (fullMonth) monthPunchRange(java.time.YearMonth.parse(month))
+            val (from, to) = if (fullMonth) attendancePeriodPunchRange(periods.value.single { it.month == month })
                 else attendancePunchRange(LocalDate.of(2026, 10, 24))
             results.publish(AttendanceRefreshScope(month, from, to), owner, version, result)
         }
@@ -71,11 +87,11 @@ class AttendanceRefreshFeedbackTest {
         override suspend fun refresh(reason: RefreshReason) = RefreshResult.Success(0, 0)
     }
 
-    private class Fixture(scope: TestScope) {
-        val repository = Repository()
+    private class Fixture(scope: TestScope, schoolPeriods: List<AttendancePeriod>, instant: String) {
+        val repository = Repository(schoolPeriods)
         val store = SessionStore(ImmediateStore())
         val manager = SessionManager(store, emptySet(), scope.backgroundScope)
-        private val time = TimeProvider(Clock.fixed(Instant.parse("2026-10-24T04:00:00Z"), ZoneId.of("Asia/Shanghai")))
+        private val time = TimeProvider(Clock.fixed(Instant.parse(instant), ZoneId.of("Asia/Shanghai")))
         val attendance = AttendanceViewModel(repository, manager, AppUrlProvider(store), store, time)
         val home = HomeViewModel(Schedule(), repository, manager, AppUrlProvider(store), store, time)
         fun close() {
@@ -84,11 +100,18 @@ class AttendanceRefreshFeedbackTest {
         }
     }
 
-    private fun mainTest(block: suspend TestScope.(Fixture) -> Unit) {
+    private fun mainTest(
+        schoolPeriods: List<AttendancePeriod> = (9..11).map { month ->
+            val calendar = java.time.YearMonth.of(2026, month)
+            AttendancePeriod(calendar.toString(), calendar.atDay(1), calendar.atEndOfMonth())
+        },
+        instant: String = "2026-10-24T04:00:00Z",
+        block: suspend TestScope.(Fixture) -> Unit
+    ) {
         try {
             runTest {
                 Dispatchers.setMain(StandardTestDispatcher(testScheduler))
-                val fixture = Fixture(this)
+                val fixture = Fixture(this, schoolPeriods, instant)
                 try {
                     backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { fixture.attendance.state.collect {} }
                     runCurrent()
@@ -214,15 +237,53 @@ class AttendanceRefreshFeedbackTest {
         assertThat(f.attendance.state.value.refreshing).isTrue()
         f.manager.beginLogin(SchoolSystem.STU)
         f.manager.withAccount(SchoolSystem.STU, "new-owner", 1) { Unit }
-        val success = AttendanceRefreshResult.Success("2026-09", 30)
-        f.repository.publish(success, owner = "new-owner", version = 2, month = "2026-09")
+        val success = AttendanceRefreshResult.Success("2026-10", 24)
+        f.repository.publish(success, owner = "new-owner", version = 2)
         runCurrent()
         // The helper now returns its previously saved historical failure after a successful
         // current-day query. The outer ViewModel must still reject that old-account result.
         f.repository.result = AttendanceRefreshResult.Success("2026-10", 24)
         currentDay.complete(f.repository.result)
         runCurrent()
+        assertThat(f.attendance.state.value.month).isEqualTo("2026-10")
         assertThat(f.attendance.state.value.refreshing).isFalse()
         assertThat(f.attendance.state.value.lastResult).isEqualTo(success)
+    }
+
+    @Test fun `November recovery on an October attendance day clears errors on both screens`() = mainTest(
+        schoolPeriods = listOf(
+            AttendancePeriod("2026-10", LocalDate.of(2026, 9, 28), LocalDate.of(2026, 10, 25)),
+            AttendancePeriod("2026-11", LocalDate.of(2026, 10, 26), LocalDate.of(2026, 11, 29))
+        ),
+        instant = "2026-10-30T04:00:00Z"
+    ) { f ->
+        f.home.refreshAttendance()
+        runCurrent()
+        assertThat(f.attendance.state.value.month).isEqualTo("2026-11")
+        assertThat(f.attendance.state.value.lastResult).isInstanceOf(AttendanceRefreshResult.Unreachable::class.java)
+        assertThat(f.home.attendanceResult.value).isInstanceOf(AttendanceRefreshResult.Unreachable::class.java)
+        val recovered = AttendanceRefreshResult.Success("2026-11", 35)
+        f.repository.publish(recovered, month = "2026-11")
+        runCurrent()
+        assertThat(f.attendance.state.value.lastResult).isEqualTo(recovered)
+        assertThat(f.home.attendanceResult.value).isEqualTo(recovered)
+    }
+
+    @Test fun `late selected-month success cannot hide a current-period lookup failure`() = mainTest { f ->
+        val failure = AttendanceRefreshResult.Unreachable("current period unavailable")
+        f.repository.result = AttendanceRefreshResult.Success("2026-09", 30)
+        f.repository.periodFailure = failure
+        f.repository.publishRefreshResults = true
+        f.attendance.previousMonth()
+        runCurrent()
+        assertThat(f.attendance.state.value.month).isEqualTo("2026-09")
+        assertThat(f.attendance.state.value.lastResult).isEqualTo(failure)
+        assertThat(f.attendance.state.value.refreshing).isFalse()
+
+        // A later independent recovery is still allowed to replace the combined local failure.
+        val recovered = AttendanceRefreshResult.Success("2026-09", 30)
+        f.repository.publish(recovered, month = "2026-09")
+        runCurrent()
+        assertThat(f.attendance.state.value.lastResult).isEqualTo(recovered)
     }
 }

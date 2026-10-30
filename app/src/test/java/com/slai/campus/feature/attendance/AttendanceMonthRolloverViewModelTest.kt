@@ -10,6 +10,8 @@ import com.slai.campus.core.session.SessionManager
 import com.slai.campus.core.session.SessionStore
 import com.slai.campus.core.web.AppUrlProvider
 import com.slai.campus.domain.attendance.AttendanceMonth
+import com.slai.campus.domain.attendance.AttendancePeriod
+import com.slai.campus.domain.attendance.AttendancePeriodResult
 import com.slai.campus.domain.attendance.AttendancePunch
 import com.slai.campus.domain.attendance.AttendanceRecord
 import com.slai.campus.domain.attendance.AttendanceRefreshResult
@@ -57,9 +59,29 @@ class AttendanceMonthRolloverViewModelTest {
     }
 
     private class Repository(
-        private val pending: Map<String, CompletableDeferred<AttendanceRefreshResult>> = emptyMap()
+        private val pending: Map<String, CompletableDeferred<AttendanceRefreshResult>> = emptyMap(),
+        val schoolPeriods: List<AttendancePeriod> = (8..12).map { month ->
+            val calendar = java.time.YearMonth.of(2026, month)
+            AttendancePeriod(calendar.toString(), calendar.atDay(1), calendar.atEndOfMonth())
+        },
+        cached: List<AttendancePeriod> = schoolPeriods
     ) : AttendanceRepository {
         val requested = mutableListOf<String>()
+        val periods = MutableStateFlow(cached)
+        var resolutionGate: CompletableDeferred<Unit>? = null
+        var periodFailure: AttendanceRefreshResult? = null
+        override fun observePeriods() = periods
+        override suspend fun resolvePeriod(date: LocalDate): AttendancePeriodResult {
+            resolutionGate?.await()
+            periodFailure?.let { return AttendancePeriodResult.Unavailable(it) }
+            val period = schoolPeriods.singleOrNull { date in it }
+                ?: return AttendancePeriodResult.Unavailable(AttendanceRefreshResult.SchemaChanged("no period"))
+            periods.value = (periods.value.filterNot { it.month == period.month } + period)
+            return AttendancePeriodResult.Found(period)
+        }
+        override suspend fun periodForMonth(month: String): AttendancePeriodResult = schoolPeriods.firstOrNull { it.month == month }
+            ?.let { AttendancePeriodResult.Found(it) }
+            ?: AttendancePeriodResult.Unavailable(AttendanceRefreshResult.SchemaChanged("no period"))
         override fun observeDay(date: LocalDate) = flowOf<AttendanceRecord?>(null)
         override fun observeMonth(month: String) = flowOf(AttendanceMonth(month))
         override fun observePunches(from: LocalDate, to: LocalDate) = flowOf(emptyList<AttendancePunch>())
@@ -70,6 +92,13 @@ class AttendanceMonthRolloverViewModelTest {
         override suspend fun refreshPunches(from: LocalDate, to: LocalDate) =
             AttendanceRefreshResult.Success("punches", 0)
     }
+
+    private val schoolPeriods = listOf(
+        AttendancePeriod("2026-09", LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 27)),
+        AttendancePeriod("2026-10", LocalDate.of(2026, 9, 28), LocalDate.of(2026, 10, 25)),
+        AttendancePeriod("2026-11", LocalDate.of(2026, 10, 26), LocalDate.of(2026, 11, 29)),
+        AttendancePeriod("2026-12", LocalDate.of(2026, 11, 30), LocalDate.of(2026, 12, 27))
+    )
 
     private fun TestScope.viewModel(repository: Repository, clock: MutableClock): AttendanceViewModel {
         val store = SessionStore(ImmediateStore())
@@ -156,5 +185,146 @@ class AttendanceMonthRolloverViewModelTest {
             vm.viewModelScope.cancel()
             runCurrent()
         }
+    }
+
+    @Test fun `opening on October thirty first selects school November without fetching October first`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 31, 4, 23) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            assertThat(vm.state.value.todayDate).isEqualTo(LocalDate.of(2026, 10, 30))
+            assertThat(repository.requested).containsExactly("2026-11")
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `uncached school period is resolved before any monthly ledger request`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods, cached = emptyList())
+        val gate = CompletableDeferred<Unit>()
+        repository.resolutionGate = gate
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 30, 12, 0) }
+        val vm = viewModel(repository, clock)
+        val states = mutableListOf<AttendanceUiState>()
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { states += it } }
+            runCurrent()
+            assertThat(repository.requested).isEmpty()
+            assertThat(vm.state.value.refreshing).isTrue()
+            gate.complete(Unit)
+            runCurrent()
+            assertThat(repository.requested).containsExactly("2026-11")
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            assertThat(states.any { it.month == "2026-10" && it.lastResult?.isSuccess == true }).isFalse()
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `school period rolls from October into November at five on October twenty sixth`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 26, 4, 59) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-10")
+            clock.localNow = LocalDateTime.of(2026, 10, 26, 5, 0)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            assertThat(repository.requested).containsExactly("2026-10", "2026-11").inOrder()
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `returning after a school period boundary resolves the new period during refresh`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 25, 20, 0) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            clock.localNow = LocalDateTime.of(2026, 10, 26, 12, 0)
+            vm.refresh()
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            assertThat(repository.requested).containsExactly("2026-10", "2026-11").inOrder()
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `manual historical selection is retained when current school period advances`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 30, 12, 0) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            vm.previousMonth()
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-10")
+            clock.localNow = LocalDateTime.of(2026, 11, 30, 12, 0)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-10")
+            assertThat(vm.state.value.todayDate).isEqualTo(LocalDate.of(2026, 11, 30))
+            assertThat(repository.requested.last()).isEqualTo("2026-12")
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `old school period request cannot finish the new period refresh`() = mainTest {
+        val october = CompletableDeferred<AttendanceRefreshResult>()
+        val november = CompletableDeferred<AttendanceRefreshResult>()
+        val repository = Repository(mapOf("2026-10" to october, "2026-11" to november), schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 26, 4, 59) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            clock.localNow = LocalDateTime.of(2026, 10, 26, 5, 0)
+            advanceTimeBy(30_000)
+            runCurrent()
+            october.complete(AttendanceRefreshResult.Success("2026-10", 28))
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            assertThat(vm.state.value.refreshing).isTrue()
+            assertThat(vm.state.value.lastResult).isNull()
+            november.complete(AttendanceRefreshResult.Success("2026-11", 35))
+            runCurrent()
+            assertThat(vm.state.value.refreshing).isFalse()
+            assertThat(vm.state.value.lastResult).isEqualTo(AttendanceRefreshResult.Success("2026-11", 35))
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `navigating back to current school month restores automatic following`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods)
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 30, 12, 0) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            vm.previousMonth()
+            runCurrent()
+            vm.nextMonth()
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-11")
+            clock.localNow = LocalDateTime.of(2026, 11, 30, 12, 0)
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertThat(vm.state.value.month).isEqualTo("2026-12")
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
+    }
+
+    @Test fun `period lookup failure cannot report calendar month refresh success`() = mainTest {
+        val repository = Repository(schoolPeriods = schoolPeriods, cached = emptyList()).apply {
+            periodFailure = AttendanceRefreshResult.Unreachable("school unavailable")
+        }
+        val clock = MutableClock().apply { localNow = LocalDateTime.of(2026, 10, 30, 12, 0) }
+        val vm = viewModel(repository, clock)
+        try {
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            runCurrent()
+            assertThat(repository.requested).isEmpty()
+            assertThat(vm.state.value.lastResult).isEqualTo(repository.periodFailure)
+            assertThat(vm.state.value.refreshing).isFalse()
+        } finally { vm.viewModelScope.cancel(); runCurrent() }
     }
 }

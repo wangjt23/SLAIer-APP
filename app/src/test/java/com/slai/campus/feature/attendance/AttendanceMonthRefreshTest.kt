@@ -246,4 +246,53 @@ class AttendanceMonthRefreshTest {
         assertThat(clocksUpdated).isEqualTo(0)
         assertThat(requested).containsExactly("2026-09")
     }
+
+    @Test fun `school period discovery changes selection before the first ledger request`() = runTest {
+        var selected = "2026-10"
+        val requested = mutableListOf<String>()
+        val result = refreshSelectedAttendanceMonth(
+            selectedMonth = { selected },
+            now = { LocalDateTime.of(2026, 10, 30, 12, 0) },
+            prepareMonth = { selected = "2026-11"; null },
+            refreshMonth = { month, _ -> requested += month; AttendanceRefreshResult.Success(month, 35) },
+            updateClock = {}
+        )
+        assertThat(requested).containsExactly("2026-11")
+        assertThat(result).isEqualTo(AttendanceRefreshResult.Success("2026-11", 35))
+    }
+
+    @Test fun `discovery crossing five repeats discovery before requesting any old period data`() = runTest {
+        var now = LocalDateTime.of(2026, 10, 26, 4, 59)
+        var selected = "2026-10"
+        var discoveries = 0
+        val requested = mutableListOf<String>()
+        refreshSelectedAttendanceMonth(
+            selectedMonth = { selected },
+            now = { now },
+            prepareMonth = { at ->
+                discoveries++
+                selected = if (attendanceDate(at).dayOfMonth == 25) "2026-10" else "2026-11"
+                now = LocalDateTime.of(2026, 10, 26, 5, 0)
+                null
+            },
+            refreshMonth = { month, _ -> requested += month; AttendanceRefreshResult.Success(month, 35) },
+            updateClock = {}
+        )
+        assertThat(discoveries).isEqualTo(2)
+        assertThat(requested).containsExactly("2026-11")
+    }
+
+    @Test fun `failed discovery returns its failure without requesting a calendar month`() = runTest {
+        val requested = mutableListOf<String>()
+        val failure = AttendanceRefreshResult.Unreachable("period unavailable")
+        val result = refreshSelectedAttendanceMonth(
+            selectedMonth = { "2026-10" },
+            now = { beforeRollover },
+            prepareMonth = { failure },
+            refreshMonth = { month, _ -> requested += month; AttendanceRefreshResult.Success(month, 35) },
+            updateClock = {}
+        )
+        assertThat(result).isEqualTo(failure)
+        assertThat(requested).isEmpty()
+    }
 }

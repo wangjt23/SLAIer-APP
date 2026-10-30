@@ -102,7 +102,10 @@ data class AttendanceMetaEntity(
     val lastAttemptAt: Long?,
     val lastError: String?,
     /** Server-provided summary counters, serialised as `key=value;` pairs. */
-    val stats: String?
+    val stats: String?,
+    /** Validated school week list, independent of which dated rows have already been settled. */
+    val periodWeeks: String? = null,
+    val periodUpdatedAt: Long? = null
 )
 
 /**

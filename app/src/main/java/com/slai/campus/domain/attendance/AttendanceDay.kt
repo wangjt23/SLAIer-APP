@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.YearMonth
 
 /** Client display boundary, aligned with the existing open-session cutoff, not a server job time. */
 fun attendanceDate(now: LocalDateTime): LocalDate =
@@ -41,8 +40,10 @@ suspend fun AttendanceRepository.refreshCurrentAttendance(
     origin: AttendanceRefreshOrigin = AttendanceRefreshOrigin.USER
 ): AttendanceRefreshResult {
     val date = attendanceDate(now)
-    val (from, to) = attendancePunchRange(date)
-    return refreshWithPunches(YearMonth.from(date).toString(), from, to, origin)
+    return when (val resolved = resolvePeriod(date)) {
+        is AttendancePeriodResult.Unavailable -> resolved.reason
+        is AttendancePeriodResult.Found -> refreshPeriod(resolved.period, origin, date)
+    }
 }
 
 /** A historical month selection must not leave the current attendance card stale. */
@@ -51,12 +52,38 @@ suspend fun AttendanceRepository.refreshMonthWithCurrentDay(
     now: LocalDateTime,
     origin: AttendanceRefreshOrigin = AttendanceRefreshOrigin.USER
 ): AttendanceRefreshResult {
-    val (from, to) = monthPunchRange(YearMonth.parse(month))
-    val result = refreshWithPunches(month, from, to, origin)
+    val selected = when (val resolved = periodForMonth(month)) {
+        is AttendancePeriodResult.Unavailable -> return resolved.reason
+        is AttendancePeriodResult.Found -> resolved.period
+    }
+    if (selected.month != month) {
+        return AttendanceRefreshResult.SchemaChanged("学校考勤周期与所选月份不一致，已保留缓存")
+    }
+    val result = refreshPeriod(selected, origin)
     if (result is AttendanceRefreshResult.SessionExpired || result is AttendanceRefreshResult.Superseded) return result
-    if (month != YearMonth.from(attendanceDate(now)).toString()) {
-        val current = refreshCurrentAttendance(now, origin)
-        if (!current.isSuccess) return current
+    val date = attendanceDate(now)
+    when (val current = resolvePeriod(date)) {
+        is AttendancePeriodResult.Unavailable -> return combineAttendanceRefreshResults(result, current.reason)
+        is AttendancePeriodResult.Found -> {
+            if (date !in current.period) {
+                return AttendanceRefreshResult.SchemaChanged("学校考勤周期未包含当前考勤日，已保留缓存")
+            }
+            if (current.period != selected) {
+                return combineAttendanceRefreshResults(result, refreshPeriod(current.period, origin, date))
+            }
+        }
     }
     return result
+}
+
+private suspend fun AttendanceRepository.refreshPeriod(
+    period: AttendancePeriod,
+    origin: AttendanceRefreshOrigin,
+    currentDate: LocalDate? = null
+): AttendanceRefreshResult {
+    if (currentDate != null && currentDate !in period) {
+        return AttendanceRefreshResult.SchemaChanged("学校考勤周期未包含当前考勤日，已保留缓存")
+    }
+    val (from, to) = attendancePeriodPunchRange(period)
+    return refreshWithPunches(period.month, from, to, origin)
 }
